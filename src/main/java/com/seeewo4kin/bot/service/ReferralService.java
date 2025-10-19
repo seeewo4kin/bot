@@ -1,6 +1,7 @@
 package com.seeewo4kin.bot.service;
 
 import com.seeewo4kin.bot.Entity.*;
+import com.seeewo4kin.bot.repository.CouponRepository;
 import com.seeewo4kin.bot.repository.ReferralCodeRepository;
 import com.seeewo4kin.bot.repository.ReferralUsageRepository;
 import org.springframework.beans.factory.annotation.Value;
@@ -16,7 +17,7 @@ public class ReferralService {
 
     private final ReferralCodeRepository referralCodeRepository;
     private final ReferralUsageRepository referralUsageRepository;
-    private final CouponService couponService;
+    private final CouponRepository couponRepository;
     private final UserService userService;
 
     @Value("${bot.referral.reward.percent:10}")
@@ -27,15 +28,15 @@ public class ReferralService {
 
     public ReferralService(ReferralCodeRepository referralCodeRepository,
                            ReferralUsageRepository referralUsageRepository,
-                           CouponService couponService,
+                           CouponRepository couponRepository,
                            UserService userService) {
         this.referralCodeRepository = referralCodeRepository;
         this.referralUsageRepository = referralUsageRepository;
-        this.couponService = couponService;
+        this.couponRepository = couponRepository;
         this.userService = userService;
     }
 
-    public ReferralCode createReferralCode(User owner, String description) {
+    public ReferralCode createReferralCode(User owner) { // Убираем параметр description
         String code;
         do {
             code = generateRandomCode();
@@ -44,15 +45,17 @@ public class ReferralService {
         // Создаем купон для награды
         Coupon coupon = new Coupon();
         coupon.setCode("REF_" + code);
-        coupon.setDescription("Реферальный бонус от " + owner.getFirstName());
+        coupon.setDescription("Реферальный бонус");
         coupon.setDiscountAmount(referralCouponAmount);
-        coupon.setUser(owner); // Купон принадлежит создателю реферального кода
+        coupon.setUser(owner);
         coupon.setIsActive(true);
+
+        // СОХРАНЯЕМ купон перед использованием
+        coupon = couponRepository.save(coupon);
 
         ReferralCode referralCode = new ReferralCode();
         referralCode.setCode(code);
         referralCode.setOwner(owner);
-        referralCode.setDescription(description);
         referralCode.setRewardCoupon(coupon);
         referralCode.setRewardPercent(referralRewardPercent);
 

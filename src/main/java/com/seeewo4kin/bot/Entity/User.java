@@ -23,6 +23,9 @@ public class User {
     private String firstName;
     private String lastName;
 
+    private Double bonusBalance = 0.0;
+
+
     @Enumerated(EnumType.STRING)
     private UserState state = UserState.START;
 

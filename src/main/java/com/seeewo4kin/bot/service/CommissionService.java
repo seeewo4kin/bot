@@ -19,6 +19,9 @@ public class CommissionService {
     }
 
     public double calculateTotalWithCommission(double amount) {
+        if (amount < 1000) {
+            throw new IllegalArgumentException("Минимальная сумма заявки 1000 рублей");
+        }
         return commissionConfig.calculateTotalWithCommission(amount);
     }
 

@@ -1,6 +1,7 @@
 package com.seeewo4kin.bot.Bot;
 
 import com.seeewo4kin.bot.Config.AdminConfig;
+import com.seeewo4kin.bot.Config.CommissionConfig;
 import com.seeewo4kin.bot.Entity.Application;
 import com.seeewo4kin.bot.Entity.Coupon;
 import com.seeewo4kin.bot.Entity.ReferralCode;
@@ -36,6 +37,7 @@ public class MessageProcessor {
     private final AdminConfig adminConfig;
     private final CommissionService commissionService;
     private final ReferralService referralService;
+    private final CommissionConfig commissionConfig;
 
     private final Map<Long, Application> temporaryApplications = new ConcurrentHashMap<>();
     private final Map<Long, String> currentOperation = new ConcurrentHashMap<>();
@@ -50,7 +52,8 @@ public class MessageProcessor {
                             CouponService couponService,
                             AdminConfig adminConfig,
                             CommissionService commissionService,
-                            ReferralService referralService) { // Добавляем в конструктор
+                            ReferralService referralService,
+                            CommissionConfig commissionConfig) { // Добавляем в конструктор
         this.userService = userService;
         this.applicationService = applicationService;
         this.cryptoPriceService = cryptoPriceService;
@@ -60,6 +63,7 @@ public class MessageProcessor {
         this.adminConfig = adminConfig;
         this.commissionService = commissionService;
         this.referralService = referralService;
+        this.commissionConfig = commissionConfig;
     }
 
     public void processUpdate(Update update, MyBot bot) {
@@ -178,6 +182,12 @@ public class MessageProcessor {
             case ADMIN_VIEWING_APPLICATION_DETAILS:
                 processAdminApplicationActions(chatId, user, text, bot);
                 break;
+            case APPLYING_COUPON:
+                processApplyingCoupon(chatId, user, text, bot);
+                break;
+            case ADMIN_COMMISSION_SETTINGS:
+                processAdminCommissionSettings(chatId, user, text, bot);
+                break;
 
             // Реферальная система
             case REFERRAL_MENU:
@@ -238,6 +248,11 @@ public class MessageProcessor {
                 userService.update(user);
                 processAdminViewingAllApplications(chatId, user, bot);
                 return;
+            case "👨‍💼 Админ панель": // Новая обработка
+                user.setState(UserState.ADMIN_MAIN_MENU);
+                userService.update(user);
+                showAdminMainMenu(chatId, bot);
+                return;
             default:
                 lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
                         "❌ Пожалуйста, используйте кнопки", createAdminApplicationActionsKeyboard()));
@@ -269,26 +284,86 @@ public class MessageProcessor {
 
         if (application.getStatus() == ApplicationStatus.CLOSED) {
             if (application.getUserValueGetType() == ValueType.BTC) {
-                // Покупка BTC
+                // Покупка BTC - начисляем 1% кешбека
                 user.setCompletedBuyApplications(user.getCompletedBuyApplications() + 1);
                 user.setTotalBuyAmount(user.getTotalBuyAmount() + application.getCalculatedGiveValue());
+
+                // Кешбек 1% от суммы покупки
+                double cashback = application.getCalculatedGiveValue() * 0.01;
+                user.setBonusBalance(user.getBonusBalance() + cashback);
+
             } else {
-                // Продажа BTC
+                // Продажа BTC - начисляем 0.5% кешбека
                 user.setCompletedSellApplications(user.getCompletedSellApplications() + 1);
                 user.setTotalSellAmount(user.getTotalSellAmount() + application.getCalculatedGetValue());
+
+                // Кешбек 0.5% от суммы продажи
+                double cashback = application.getCalculatedGetValue() * 0.005;
+                user.setBonusBalance(user.getBonusBalance() + cashback);
             }
+
             user.setTotalApplications(user.getTotalApplications() + 1);
-
-            // Расчет комиссии (разница между суммой с комиссией и без)
-            if (application.getUserValueGetType() == ValueType.BTC) {
-                double amountWithoutCommission = application.getCalculatedGiveValue() /
-                        (1 + commissionService.getCommissionPercent(application.getCalculatedGiveValue()) / 100);
-                double commission = application.getCalculatedGiveValue() - amountWithoutCommission;
-                user.setTotalCommissionPaid(user.getTotalCommissionPaid() + commission);
-            }
-
             userService.update(user);
         }
+    }
+    private void processAdminCommissionSettings(Long chatId, User user, String text, MyBot bot) {
+        if (text.equals("🔙 Назад") || text.equals("Главное меню")) {
+            user.setState(UserState.ADMIN_MAIN_MENU);
+            userService.update(user);
+            showAdminMainMenu(chatId, bot);
+            return;
+        }
+
+        // Парсим команду для изменения комиссий
+        try {
+            // Формат: "1000-1999 5" или "5000 2"
+            String[] parts = text.split(" ");
+            if (parts.length == 2) {
+                String rangeStr = parts[0];
+                double percent = Double.parseDouble(parts[1]);
+
+                if (rangeStr.contains("-")) {
+                    // Диапазон: "1000-1999"
+                    String[] rangeParts = rangeStr.split("-");
+                    double min = Double.parseDouble(rangeParts[0]);
+                    double max = Double.parseDouble(rangeParts[1]);
+
+                    // Обновляем комиссию в конфиге
+                    commissionConfig.updateCommissionRange(min, percent);
+
+                    String message = String.format("✅ Комиссия обновлена!\n\nДиапазон: %.0f-%.0f ₽\nКомиссия: %.1f%%",
+                            min, max, percent);
+                    lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createBackKeyboard()));
+
+                } else {
+                    // Минимальная сумма: "5000"
+                    double min = Double.parseDouble(rangeStr);
+                    commissionConfig.updateCommissionRange(min, percent);
+
+                    String message = String.format("✅ Комиссия обновлена!\n\nОт %.0f ₽\nКомиссия: %.1f%%",
+                            min, percent);
+                    lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createBackKeyboard()));
+                }
+                return;
+            }
+        } catch (Exception e) {
+            // Не удалось распарсить
+        }
+
+        // Показываем текущие настройки
+        String message = "💰 Управление комиссиями\n\n" +
+                "Текущие настройки:\n" +
+                "• 1000-1999 ₽: " + commissionConfig.getCommissionPercent(1000) + "%\n" +
+                "• 2000-2999 ₽: " + commissionConfig.getCommissionPercent(2000) + "%\n" +
+                "• 3000-4999 ₽: " + commissionConfig.getCommissionPercent(3000) + "%\n" +
+                "• 5000+ ₽: " + commissionConfig.getCommissionPercent(5000) + "%\n\n" +
+                "Для изменения введите:\n" +
+                "• Для диапазона: 1000-1999 5\n" +
+                "• Для минимальной суммы: 5000 2\n\n" +
+                "Используйте '🔙 Назад' для возврата";
+
+        ReplyKeyboardMarkup keyboard = createBackKeyboard();
+        lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, keyboard));
     }
 
 
@@ -357,20 +432,16 @@ public class MessageProcessor {
                 userService.update(user);
                 showSellMenu(chatId, bot);
                 break;
-            case "📋 Мои заявки":
-                user.setState(UserState.VIEWING_APPLICATIONS);
+            case "🎫 Ввести реф. код":
+                if (user.getUsedReferralCode() != null) {
+                    lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
+                            "❌ Вы уже использовали реферальный код.", createMainMenuKeyboard(user)));
+                    return;
+                }
+                user.setState(UserState.ENTERING_REFERRAL_CODE);
                 userService.update(user);
-                processViewingApplications(chatId, user, bot);
-                break;
-            case "🎫 Мои купоны":
-                user.setState(UserState.VIEWING_COUPONS);
-                userService.update(user);
-                processViewingCoupons(chatId, user, bot);
-                break;
-            case "📊 Очередь":
-                user.setState(UserState.VIEWING_QUEUE);
-                userService.update(user);
-                processViewingQueue(chatId, user, bot);
+                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
+                        "Введите реферальный код:", createBackKeyboard()));
                 break;
             case "👨‍💼 Админ панель":
                 if (adminConfig.isAdmin(user.getId())) {
@@ -458,14 +529,24 @@ public class MessageProcessor {
         }
     }
 
+    private void showBonusBalance(Long chatId, User user, MyBot bot) {
+        String message = String.format("""
+        💰 Бонусный баланс
+            
+        🎁 Доступно бонусов: %.2f ₽
+            
+        💡 Бонусы начисляются за проведенные операции:
+        • 1%% от суммы покупки
+        • 0.5%% от суммы продажи
+        • Бонусы можно использовать для оплаты комиссий
+        """, user.getBonusBalance());
+
+        lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createOtherMenuKeyboard()));
+    }
+
 
     private void processEnteringSellAmount(Long chatId, User user, String text, MyBot bot) {
         switch (text) {
-            case "Калькулятор":
-                String calculatorCommand = "@" + bot.getBotUsername() + " sell-BTC ";
-                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                        "🧮 Введите количество для расчета: " + calculatorCommand, createAmountInputKeyboard()));
-                break;
             case "Назад":
                 user.setState(UserState.SELL_MENU);
                 userService.update(user);
@@ -487,7 +568,6 @@ public class MessageProcessor {
                     double btcPrice = cryptoPriceService.getCurrentPrice("BTC", "RUB");
                     double rubAmount = btcAmount * btcPrice;
 
-                    // Для продажи комиссия не применяется (или применяется по-другому)
                     Application application = new Application();
                     application.setUser(user);
                     application.setUserValueGetType(ValueType.RUB);
@@ -497,17 +577,18 @@ public class MessageProcessor {
                     application.setCalculatedGetValue(rubAmount);
                     application.setCalculatedGiveValue(btcAmount);
                     application.setTitle("Продажа BTC за RUB");
+                    application.setStatus(ApplicationStatus.FREE); // ДОБАВЛЕНО
 
                     temporaryApplications.put(user.getId(), application);
 
                     String calculationMessage = String.format("""
-                        💰 Расчет операции:
-                        
-                        ₿ Вы отдадите: %.8f BTC
-                        💸 Вы получите: %.2f ₽
-                        
-                        Подтверждаете создание заявки?
-                        """, btcAmount, rubAmount);
+                    💰 Расчет операции:
+                    
+                    ₿ Вы отдадите: %.8f BTC
+                    💸 Вы получите: %.2f ₽
+                    
+                    Подтверждаете создание заявки?
+                    """, btcAmount, rubAmount);
 
                     ReplyKeyboardMarkup keyboard = createConfirmationKeyboard();
                     lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, calculationMessage, keyboard));
@@ -521,7 +602,6 @@ public class MessageProcessor {
                 }
         }
     }
-
     private void showExchangeRates(Long chatId, User user, MyBot bot) {
         double btcPrice = cryptoPriceService.getCurrentPrice("BTC", "RUB");
         double ethPrice = cryptoPriceService.getCurrentPrice("ETH", "RUB");
@@ -581,7 +661,13 @@ public class MessageProcessor {
                 createApplicationWithoutCoupon(chatId, user, application, bot);
                 break;
             case "Назад":
-                user.setState(UserState.ENTERING_BUY_AMOUNT);
+                // ИСПРАВИТЬ состояние в зависимости от типа операции
+                if ("BUY_RUB".equals(currentOperation.get(user.getId())) ||
+                        "BUY_BTC".equals(currentOperation.get(user.getId()))) {
+                    user.setState(UserState.BUY_MENU);
+                } else {
+                    user.setState(UserState.SELL_MENU);
+                }
                 userService.update(user);
                 lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
                         "Введите сумму:", createAmountInputKeyboard()));
@@ -590,7 +676,6 @@ public class MessageProcessor {
                 processMainMenu(chatId, user, bot);
                 break;
             default:
-                // Обработка ввода кода купона
                 processCouponCode(chatId, user, application, text, bot);
         }
     }
@@ -606,25 +691,26 @@ public class MessageProcessor {
 
             application.setAppliedCoupon(coupon);
             application.setFinalAmountAfterDiscount(discountedAmount);
+            application.setStatus(ApplicationStatus.FREE); // Устанавливаем статус
+
+            // Сохраняем заявку
+            applicationService.create(application);
+            temporaryApplications.remove(user.getId());
 
             String message = String.format("""
-                ✅ Купон применен!
-                
-                🎫 Купон: %s
-                💰 Скидка: %s
-                💸 Итоговая сумма: %.2f ₽
-                
-                Заявка создана с применением купона!
-                """,
+            ✅ Купон применен!
+            
+            🎫 Купон: %s
+            💰 Скидка: %s
+            💸 Итоговая сумма: %.2f ₽
+            
+            Заявка создана с применением купона!
+            """,
                     coupon.getCode(),
                     coupon.getDiscountPercent() != null ?
                             coupon.getDiscountPercent() + "%" :
                             coupon.getDiscountAmount() + " ₽",
                     discountedAmount);
-
-            // Сохраняем заявку
-            applicationService.create(application);
-            temporaryApplications.remove(user.getId());
 
             lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createMainMenuKeyboard(user)));
 
@@ -639,27 +725,9 @@ public class MessageProcessor {
     }
 
     private void createApplicationWithoutCoupon(Long chatId, User user, Application application, MyBot bot) {
+        application.setStatus(ApplicationStatus.FREE); // Устанавливаем статус перед сохранением
         applicationService.create(application);
         temporaryApplications.remove(user.getId());
-
-        // Обновляем статистику пользователя
-        if (application.getUserValueGetType() == ValueType.BTC) {
-            // Покупка BTC за RUB
-            user.setTotalBuyAmount(user.getTotalBuyAmount() + application.getCalculatedGiveValue());
-            user.setCompletedBuyApplications(user.getCompletedBuyApplications() + 1);
-            // Комиссия уже включена в calculatedGiveValue, но мы можем ее выделить
-            double commission = commissionService.calculateCommission(application.getCalculatedGiveValue());
-            user.setTotalCommissionPaid(user.getTotalCommissionPaid() + commission);
-        } else {
-            // Продажа BTC за RUB
-            user.setTotalSellAmount(user.getTotalSellAmount() + application.getCalculatedGetValue());
-            user.setCompletedSellApplications(user.getCompletedSellApplications() + 1);
-        }
-        user.setTotalApplications(user.getTotalApplications() + 1);
-        userService.update(user);
-
-        // Обрабатываем реферальное вознаграждение
-        referralService.processReferralReward(application);
 
         String message = "✅ Заявка успешно создана!\n\n";
         if (application.getUserValueGetType() == ValueType.BTC) {
@@ -732,12 +800,14 @@ public class MessageProcessor {
             for (int i = 0; i < applications.size(); i++) {
                 Application app = applications.get(i);
                 response.append(String.format("""
-                    🆔 Заявка #%d
-                    💰 Получаю: %.8f %s
-                    💸 Отдаю: %.2f %s
-                    📅 Создана: %s
-                    """,
+                🆔 Заявка #%d
+                📊 Статус: %s
+                💰 Получаю: %.8f %s
+                💸 Отдаю: %.2f %s
+                📅 Создана: %s
+                """,
                         app.getId(),
+                        app.getStatus().getDisplayName(), // ДОБАВЛЕНО
                         app.getUserValueGetValue(),
                         app.getUserValueGetType().getDisplayName(),
                         app.getUserValueGiveValue(),
@@ -760,10 +830,6 @@ public class MessageProcessor {
     }
     private void processEnteringBuyAmountRub(Long chatId, User user, String text, MyBot bot) {
         switch (text) {
-            case "Калькулятор":
-                String calculatorCommand = "@" + bot.getBotUsername() + " buy-BTC ";
-                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, "🧮 Введите сумму для расчета: " + calculatorCommand, createAmountInputKeyboard()));
-                break;
             case "Назад":
                 user.setState(UserState.BUY_MENU);
                 userService.update(user);
@@ -831,10 +897,6 @@ public class MessageProcessor {
 
     private void processEnteringBuyAmountBtc(Long chatId, User user, String text, MyBot bot) {
         switch (text) {
-            case "Калькулятор":
-                String calculatorCommand = "@" + bot.getBotUsername() + " buy-BTC ";
-                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, "🧮 Введите количество для расчета: " + calculatorCommand, createAmountInputKeyboard()));
-                break;
             case "Назад":
                 user.setState(UserState.BUY_MENU);
                 userService.update(user);
@@ -855,6 +917,7 @@ public class MessageProcessor {
                     double btcPrice = cryptoPriceService.getCurrentPrice("BTC", "RUB");
                     double rubAmount = btcAmount * btcPrice;
 
+                    // Переходим к подтверждению с комиссией
                     processBuyConfirmation(chatId, user, rubAmount, btcAmount, "BTC", "RUB", bot);
 
                 } catch (NumberFormatException e) {
@@ -866,44 +929,47 @@ public class MessageProcessor {
     private void processBuyConfirmation(Long chatId, User user, double rubAmount, double btcAmount,
                                         String inputType, String outputType, MyBot bot) {
 
+        // Проверка минимальной суммы
+        if (rubAmount < 1000) {
+            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
+                    "❌ Минимальная сумма заявки 1000 рублей", createAmountInputKeyboard()));
+            return;
+        }
+
+        // Расчет комиссии
+        double commission = commissionService.calculateCommission(rubAmount);
+        double totalAmount = commissionService.calculateTotalWithCommission(rubAmount);
+
         // Создаем временную заявку
         Application application = new Application();
         application.setUser(user);
         application.setUserValueGetType(ValueType.BTC);
         application.setUserValueGiveType(ValueType.RUB);
         application.setUserValueGetValue(btcAmount);
-        application.setUserValueGiveValue(rubAmount);
+        application.setUserValueGiveValue(totalAmount);
         application.setCalculatedGetValue(btcAmount);
-        application.setCalculatedGiveValue(rubAmount);
+        application.setCalculatedGiveValue(totalAmount);
         application.setTitle("Покупка BTC за RUB");
+        application.setStatus(ApplicationStatus.FREE);
 
         temporaryApplications.put(user.getId(), application);
 
-        String calculationMessage;
-        if ("RUB".equals(inputType)) {
-            calculationMessage = String.format("""
-            💰 Расчет операции:
-            
-            💸 Вы отдадите: %.2f ₽
-            ₿ Вы получите: %.8f BTC
-            
-            Подтверждаете создание заявки?
-            """, rubAmount, btcAmount);
-        } else {
-            calculationMessage = String.format("""
-            💰 Расчет операции:
-            
-            ₿ Вы отдадите: %.8f BTC
-            💸 Вы получите: %.2f ₽
-            
-            Подтверждаете создание заявки?
-            """, btcAmount, rubAmount);
-        }
+        String calculationMessage = String.format("""
+        💰 Расчет операции:
+        
+        💸 Сумма: %.2f ₽
+        💰 Комиссия: %.2f ₽ (%.1f%%)
+        💸 Итого к оплате: %.2f ₽
+        ₿ Вы получите: %.8f BTC
+        
+        Хотите применить купон для скидки?
+        """, rubAmount, commission, commissionService.getCommissionPercent(rubAmount),
+                totalAmount, btcAmount);
 
-        ReplyKeyboardMarkup keyboard = createConfirmationKeyboard();
+        ReplyKeyboardMarkup keyboard = createCouponApplicationKeyboard();
         lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, calculationMessage, keyboard));
 
-        user.setState(UserState.CONFIRMING_APPLICATION);
+        user.setState(UserState.APPLYING_COUPON);
         userService.update(user);
     }
     private void processConfirmingApplication(Long chatId, User user, String text, MyBot bot) {
@@ -949,18 +1015,18 @@ public class MessageProcessor {
     }
 
     private void processViewingQueue(Long chatId, User user, MyBot bot) {
-        List<Application> allApplications = applicationService.findAll();
-        int totalApplications = allApplications.size();
-        int activeUsers = userService.getActiveUsersCount(); // Нужно добавить этот метод в UserService
+        List<Application> activeApplications = applicationService.findActiveApplications(); // ИЗМЕНИТЬ
+        int totalApplications = activeApplications.size();
+        int activeUsers = userService.getActiveUsersCount();
 
         String message = String.format("""
-            📊 Статистика системы:
-            
-            📈 Всего заявок: %d
-            👥 Активных пользователей: %d
-            
-            💡 Система работает стабильно
-            """, totalApplications, activeUsers);
+        📊 Статистика системы:
+        
+        📈 Активных заявок: %d
+        👥 Активных пользователей: %d
+        
+        💡 Система работает стабильно
+        """, totalApplications, activeUsers);
 
         lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createMainMenuKeyboard(user)));
 
@@ -986,14 +1052,17 @@ public class MessageProcessor {
             case "👥 Пользователи":
                 showAdminUsers(chatId, user, bot);
                 break;
-            case "🎫 Купоны":
-                showAdminCoupons(chatId, user, bot);
+            case "💰 Комиссии":
+                user.setState(UserState.ADMIN_COMMISSION_SETTINGS);
+                userService.update(user);
+                processAdminCommissionSettings(chatId, user, text, bot);
                 break;
             case "🔙 Главное меню":
                 processMainMenu(chatId, user, bot);
                 break;
             default:
-                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, "❌ Пожалуйста, используйте кнопки", createAdminMainMenuKeyboard()));
+                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
+                        "❌ Пожалуйста, используйте кнопки", createAdminMainMenuKeyboard()));
         }
     }
     private void showAdminStatistics(Long chatId, User user, MyBot bot) {
@@ -1139,16 +1208,37 @@ public class MessageProcessor {
     }
     private void processOtherMenu(Long chatId, User user, String text, MyBot bot) {
         switch (text) {
+            case "📋 Мои заявки":
+                user.setState(UserState.VIEWING_APPLICATIONS);
+                userService.update(user);
+                processViewingApplications(chatId, user, bot);
+                break;
+            case "🎫 Мои купоны":
+                user.setState(UserState.VIEWING_COUPONS);
+                userService.update(user);
+                processViewingCoupons(chatId, user, bot);
+                break;
+            case "📊 Очередь":
+                user.setState(UserState.VIEWING_QUEUE);
+                userService.update(user);
+                processViewingQueue(chatId, user, bot);
+                break;
+            case "🧮 Калькулятор":
+                showCalculatorMenu(chatId, user, bot);
+                break;
+            case "📈 Реферальная система":
+                user.setState(UserState.REFERRAL_MENU);
+                userService.update(user);
+                showReferralMenu(chatId, user, bot);
+                break;
             case "📊 Курсы":
                 showExchangeRates(chatId, user, bot);
                 break;
             case "👤 Профиль":
                 showProfile(chatId, user, bot);
                 break;
-            case "📈 Реферальная система":
-                user.setState(UserState.REFERRAL_MENU);
-                userService.update(user);
-                showReferralMenu(chatId, user, bot);
+            case "💰 Бонусы":
+                showBonusBalance(chatId, user, bot);
                 break;
             case "🔙 Главное меню":
                 processMainMenu(chatId, user, bot);
@@ -1163,30 +1253,51 @@ public class MessageProcessor {
                 user.setState(UserState.CREATING_REFERRAL_CODE);
                 userService.update(user);
                 lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                        "Введите описание для вашего реферального кода:", createBackKeyboard()));
-                break;
-            case "Ввести реферальный код":
-                if (user.getUsedReferralCode() != null) {
-                    lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                            "❌ Вы уже использовали реферальный код.", createReferralMenuKeyboard()));
-                    return;
-                }
-                user.setState(UserState.ENTERING_REFERRAL_CODE);
-                userService.update(user);
-                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                        "Введите реферальный код:", createBackKeyboard()));
+                        "Введите описание для вашего реферального кода (например: 'Для друзей' или 'Специальное предложение'):",
+                        createBackKeyboard()));
                 break;
             case "🔙 Назад":
-                user.setState(UserState.MAIN_MENU);
+                user.setState(UserState.OTHER_MENU);
                 userService.update(user);
                 showOtherMenu(chatId, user, bot);
+                break;
+            case "Главное меню":
+                processMainMenu(chatId, user, bot);
                 break;
             default:
                 lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
                         "❌ Пожалуйста, используйте кнопки", createReferralMenuKeyboard()));
         }
     }
+    private void showCalculatorMenu(Long chatId, User user, MyBot bot) {
+        String message = "🧮 Калькулятор\n\n" +
+                "Выберите тип расчета:";
+        ReplyKeyboardMarkup keyboard = createCalculatorMenuKeyboard();
+        lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, keyboard));
+    }
+
+    private ReplyKeyboardMarkup createCalculatorMenuKeyboard() {
+        ReplyKeyboardMarkup keyboard = new ReplyKeyboardMarkup();
+        keyboard.setResizeKeyboard(true);
+        keyboard.setOneTimeKeyboard(false);
+
+        List<KeyboardRow> rows = new ArrayList<>();
+
+        KeyboardRow row1 = new KeyboardRow();
+        row1.add("💰 Купить BTC");
+        row1.add("💸 Продать BTC");
+
+        KeyboardRow row2 = new KeyboardRow();
+        row2.add("🔙 Назад");
+
+        rows.add(row1);
+        rows.add(row2);
+
+        keyboard.setKeyboard(rows);
+        return keyboard;
+    }
     private void showReferralMenu(Long chatId, User user, MyBot bot) {
+        user = userService.find(user.getId()); // Обновляем данные
         Long referralCount = referralService.getUserReferralCount(user.getId());
         List<ReferralCode> userCodes = referralService.getUserReferralCodes(user.getId());
 
@@ -1204,10 +1315,8 @@ public class MessageProcessor {
             message.append("У вас пока нет реферальных кодов.\n");
         } else {
             for (ReferralCode code : userCodes) {
-                message.append(String.format("🔸 %s - %s (Использований: %d)\n",
-                        code.getCode(),
-                        code.getDescription(),
-                        code.getUsages().size()));
+                message.append(String.format("🔸 Код: %s (Использований: %d)\n",
+                        code.getCode(), code.getUsages().size()));
             }
         }
 
@@ -1215,7 +1324,7 @@ public class MessageProcessor {
         lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message.toString(), keyboard));
     }
     private void processCreatingReferralCode(Long chatId, User user, String text, MyBot bot) {
-        if (text.equals("Назад")) {
+        if (text.equals("Назад") || text.equals("🔙 Назад") || text.equals("Главное меню")) {
             user.setState(UserState.REFERRAL_MENU);
             userService.update(user);
             showReferralMenu(chatId, user, bot);
@@ -1223,10 +1332,18 @@ public class MessageProcessor {
         }
 
         try {
-            ReferralCode referralCode = referralService.createReferralCode(user, text);
-            String message = String.format("✅ Реферальный код создан!\n\nКод: %s\nОписание: %s\n\nТеперь вы можете делиться этим кодом с друзьями. За каждую успешную заявку реферала вы будете получать %.2f%% от суммы заявки.",
+            // Теперь создаем реферальный код БЕЗ описания
+            ReferralCode referralCode = referralService.createReferralCode(user);
+
+            String message = String.format("""
+            ✅ Реферальный код создан!
+            
+            🔸 Ваш код: %s
+            
+            Теперь вы можете делиться этим кодом с друзьями. 
+            За каждую успешную заявку реферала вы будете получать %.2f%% от суммы заявки.
+            """,
                     referralCode.getCode(),
-                    referralCode.getDescription(),
                     referralCode.getRewardPercent());
 
             lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createReferralMenuKeyboard()));
@@ -1235,29 +1352,38 @@ public class MessageProcessor {
             userService.update(user);
 
         } catch (Exception e) {
+            e.printStackTrace();
             lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                    "❌ Ошибка при создании реферального кода", createReferralMenuKeyboard()));
+                    "❌ Ошибка при создании реферального кода. Попробуйте позже.",
+                    createBackKeyboard()));
         }
     }
     private void processEnteringReferralCode(Long chatId, User user, String text, MyBot bot) {
-        if (text.equals("Назад")) {
-            user.setState(UserState.REFERRAL_MENU);
+        if (text.equals("Назад") || text.equals("🔙 Назад") || text.equals("Главное меню")) {
+            user.setState(UserState.MAIN_MENU);
             userService.update(user);
-            showReferralMenu(chatId, user, bot);
+            showMainMenu(chatId, user, bot);
             return;
         }
 
-        boolean success = referralService.useReferralCode(text, user);
+        boolean success = referralService.useReferralCode(text.trim(), user);
         if (success) {
-            String message = "✅ Реферальный код успешно активирован! Теперь вы будете получать бонусы за приглашенных друзей.";
-            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createReferralMenuKeyboard()));
-        } else {
-            String message = "❌ Неверный реферальный код или он уже был использован.";
-            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createReferralMenuKeyboard()));
-        }
+            // Обновляем пользователя для получения актуальных данных
+            user = userService.find(user.getId());
 
-        user.setState(UserState.REFERRAL_MENU);
-        userService.update(user);
+            String message = "✅ Реферальный код успешно активирован!\n\n" +
+                    "Теперь вы будете получать бонусы за приглашенных друзей.\n" +
+                    "Спасибо за участие в реферальной программе!";
+
+            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createMainMenuKeyboard(user)));
+
+            user.setState(UserState.MAIN_MENU);
+            userService.update(user);
+        } else {
+            String message = "❌ Неверный реферальный код или он уже был использован.\n\n" +
+                    "Пожалуйста, проверьте код и попробуйте еще раз.";
+            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createBackKeyboard()));
+        }
     }
 
     private ReplyKeyboardMarkup createReferralMenuKeyboard() {
@@ -1269,10 +1395,10 @@ public class MessageProcessor {
 
         KeyboardRow row1 = new KeyboardRow();
         row1.add("Создать реферальный код");
-        row1.add("Ввести реферальный код");
 
         KeyboardRow row2 = new KeyboardRow();
         row2.add("🔙 Назад");
+        row2.add("Главное меню");
 
         rows.add(row1);
         rows.add(row2);
@@ -1314,12 +1440,15 @@ public class MessageProcessor {
         row1.add("💰 Купить");
         row1.add("💸 Продать");
 
-        KeyboardRow row2 = new KeyboardRow();
-        row2.add("📋 Мои заявки");
-        row2.add("🎫 Мои купоны");
+        // Добавляем кнопку ввода реферального кода только для тех, кто его не вводил
+        if (user.getUsedReferralCode() == null) {
+            KeyboardRow referralRow = new KeyboardRow();
+            referralRow.add("🎫 Ввести реф. код");
+            rows.add(referralRow);
+        }
 
-        KeyboardRow row3 = new KeyboardRow();
-        row3.add("📊 Очередь");
+        KeyboardRow row2 = new KeyboardRow();
+        row2.add("⚙️ Прочее");
 
         // Добавляем админскую панель для админов
         if (adminConfig.isAdmin(user.getId())) {
@@ -1328,18 +1457,12 @@ public class MessageProcessor {
             rows.add(adminRow);
         }
 
-        KeyboardRow row4 = new KeyboardRow();
-        row4.add("⚙️ Прочее");
-
         rows.add(row1);
         rows.add(row2);
-        rows.add(row3);
-        rows.add(row4);
 
         keyboard.setKeyboard(rows);
         return keyboard;
     }
-
     private ReplyKeyboardMarkup createAdminApplicationActionsKeyboard() {
         ReplyKeyboardMarkup keyboard = new ReplyKeyboardMarkup();
         keyboard.setResizeKeyboard(true);
@@ -1353,11 +1476,11 @@ public class MessageProcessor {
 
         KeyboardRow row2 = new KeyboardRow();
         row2.add("🔴 Отменить");
-        row1.add("🟢 Свободна");
+        row2.add("🟢 Свободна");
 
         KeyboardRow row3 = new KeyboardRow();
         row3.add("📋 Все заявки");
-        row3.add("🔙 Назад");
+        row3.add("👨‍💼 Админ панель"); // Новая кнопка
 
         rows.add(row1);
         rows.add(row2);
@@ -1492,18 +1615,29 @@ public class MessageProcessor {
         List<KeyboardRow> rows = new ArrayList<>();
 
         KeyboardRow row1 = new KeyboardRow();
-        row1.add("📊 Курсы");
-        row1.add("👤 Профиль");
+        row1.add("📋 Мои заявки");
+        row1.add("🎫 Мои купоны");
 
         KeyboardRow row2 = new KeyboardRow();
-        row2.add("📈 Реферальная система");
+        row2.add("📊 Очередь");
+        row2.add("🧮 Калькулятор");
 
         KeyboardRow row3 = new KeyboardRow();
-        row3.add("🔙 Главное меню");
+        row3.add("📈 Реферальная система");
+        row3.add("📊 Курсы");
+
+        KeyboardRow row4 = new KeyboardRow();
+        row4.add("👤 Профиль");
+        row4.add("💰 Бонусы");
+
+        KeyboardRow row5 = new KeyboardRow();
+        row5.add("🔙 Главное меню");
 
         rows.add(row1);
         rows.add(row2);
         rows.add(row3);
+        rows.add(row4);
+        rows.add(row5);
 
         keyboard.setKeyboard(rows);
         return keyboard;
@@ -1521,11 +1655,10 @@ public class MessageProcessor {
         row1.add("📊 Статистика");
 
         KeyboardRow row2 = new KeyboardRow();
+        row2.add("💰 Комиссии");
         row2.add("👥 Пользователи");
-        row2.add("🎫 Купоны");
 
         KeyboardRow row3 = new KeyboardRow();
-        row3.add("💰 Комиссии");
         row3.add("🔙 Главное меню");
 
         rows.add(row1);
@@ -1537,26 +1670,5 @@ public class MessageProcessor {
     }
 
     // Обработка управления комиссиями
-    private void processAdminCommissionSettings(Long chatId, User user, String text, MyBot bot) {
-        if (text.equals("🔙 Назад")) {
-            user.setState(UserState.ADMIN_MAIN_MENU);
-            userService.update(user);
-            showAdminMainMenu(chatId, bot);
-            return;
-        }
 
-        // Здесь можно добавить логику для изменения комиссий
-        // Например, парсинг команд типа "1000-1999 5"
-
-        String message = "💰 Управление комиссиями\n\n" +
-                "Текущие настройки комиссий:\n" +
-                "• 1000-1999 ₽: 5%\n" +
-                "• 2000-2999 ₽: 4%\n" +
-                "• 3000-4999 ₽: 3%\n" +
-                "• 5000+ ₽: 2%\n\n" +
-                "Для изменения используйте формат: МИН-МАКС ПРОЦЕНТ\n" +
-                "Пример: 1000-1999 5";
-
-        lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createBackKeyboard()));
-    }
 }

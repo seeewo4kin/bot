@@ -40,8 +40,6 @@ public class UserServiceImpl implements UserService {
     @Override
     @Transactional(readOnly = true)
     public int getActiveUsersCount() {
-        // Простая реализация - возвращаем общее количество пользователей
-        // В реальном приложении можно добавить логику для определения активных пользователей
         return (int) userRepository.count();
     }
 
