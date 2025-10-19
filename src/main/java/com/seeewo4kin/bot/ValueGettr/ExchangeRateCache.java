@@ -13,26 +13,15 @@ import java.util.concurrent.TimeUnit;
 public class ExchangeRateCache {
     private final Map<String, Double> rateCache = new ConcurrentHashMap<>();
     private final Map<String, Long> cacheTimestamps = new ConcurrentHashMap<>();
-    private static final long CACHE_TTL_MS = 60000; // 1 минута
+    private static final long CACHE_TTL_MS = 300000; // 5 минут
 
     private final CryptoPriceService cryptoPriceService;
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
 
-    // Fallback курсы для основных пар
-    private static final Map<String, Double> FALLBACK_RATES = Map.of(
-            "BTC_USDT", 45000.0,
-            "ETH_USDT", 3000.0,
-            "USDT_RUB", 92.0,
-            "USDT_EUR", 0.92,
-            "BTC_ETH", 15.0,
-            "BTC_RUB", 4000000.0,
-            "ETH_RUB", 270000.0
-    );
-
     public ExchangeRateCache(CryptoPriceService cryptoPriceService) {
         this.cryptoPriceService = cryptoPriceService;
-        // Очистка устаревших записей каждые 30 секунд
-        scheduler.scheduleAtFixedRate(this::cleanupExpiredCache, 30, 30, TimeUnit.SECONDS);
+        // Очистка устаревших записей каждую минуту
+        scheduler.scheduleAtFixedRate(this::cleanupExpiredCache, 60, 60, TimeUnit.SECONDS);
     }
 
     public Double getCachedRate(String fromCurrency, String toCurrency) {
@@ -64,59 +53,62 @@ public class ExchangeRateCache {
             return cachedRate;
         }
 
-        // Если в кэше нет, вычисляем курс
-        Double rate = calculateExchangeRate(fromCurrency, toCurrency);
+        // Если в кэше нет, вычисляем курс через USD
+        Double rate = calculateExchangeRateViaUSD(fromCurrency, toCurrency);
         if (rate != null && rate > 0) {
             putRate(fromCurrency.name(), toCurrency.name(), rate);
             return rate;
         }
 
-        // Если не удалось получить курс, используем fallback
-        return getFallbackRate(fromCurrency, toCurrency);
+        // Если не удалось получить курс, используем прямой расчет
+        return calculateDirectExchangeRate(fromCurrency, toCurrency);
     }
 
-    private Double calculateExchangeRate(ValueType fromCurrency, ValueType toCurrency) {
+    private Double calculateExchangeRateViaUSD(ValueType fromCurrency, ValueType toCurrency) {
         try {
-            // Получаем курсы через USD
-            Map<String, Double> fromPrices = cryptoPriceService.getMultiplePrices(fromCurrency.name());
-            Map<String, Double> toPrices = cryptoPriceService.getMultiplePrices(toCurrency.name());
+            // Получаем цены в USD
+            Double fromUsdPrice = cryptoPriceService.getCurrentPrice(fromCurrency.name(), "USD");
+            Double toUsdPrice = cryptoPriceService.getCurrentPrice(toCurrency.name(), "USD");
 
-            Double fromUsdRate = fromPrices.get("USD");
-            Double toUsdRate = toPrices.get("USD");
-
-            if (fromUsdRate != null && toUsdRate != null && toUsdRate != 0) {
-                return fromUsdRate / toUsdRate;
+            if (fromUsdPrice != null && toUsdPrice != null && toUsdPrice != 0) {
+                return fromUsdPrice / toUsdPrice;
             }
         } catch (Exception e) {
-            // В случае ошибки используем fallback-логику
+            System.err.println("Error calculating exchange rate via USD: " + e.getMessage());
         }
-
         return null;
     }
 
+    private Double calculateDirectExchangeRate(ValueType fromCurrency, ValueType toCurrency) {
+        try {
+            // Пробуем получить прямую цену
+            Map<String, Double> fromPrices = cryptoPriceService.getMultiplePrices(fromCurrency.name());
+            Map<String, Double> toPrices = cryptoPriceService.getMultiplePrices(toCurrency.name());
+
+            // Пробуем разные валюты для расчета
+            String[] fiats = {"USD", "RUB", "EUR"};
+            for (String fiat : fiats) {
+                Double fromPrice = fromPrices.get(fiat);
+                Double toPrice = toPrices.get(fiat);
+
+                if (fromPrice != null && toPrice != null && toPrice != 0) {
+                    return fromPrice / toPrice;
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error calculating direct exchange rate: " + e.getMessage());
+        }
+
+        // Final fallback
+        return getFallbackRate(fromCurrency, toCurrency);
+    }
+
     private Double getFallbackRate(ValueType fromCurrency, ValueType toCurrency) {
-        String key = fromCurrency.name() + "_" + toCurrency.name();
-        Double rate = FALLBACK_RATES.get(key);
-
-        if (rate != null) {
-            return rate;
-        }
-
-        // Если прямой пары нет, пробуем обратную
-        String reverseKey = toCurrency.name() + "_" + fromCurrency.name();
-        Double reverseRate = FALLBACK_RATES.get(reverseKey);
-        if (reverseRate != null && reverseRate != 0) {
-            return 1.0 / reverseRate;
-        }
-
-        // Если ничего не нашли, используем базовые курсы через USD
+        // Упрощенные курсы для fallback через USD
         Map<ValueType, Double> usdRates = Map.of(
                 ValueType.BTC, 45000.0,
-                ValueType.ETH, 3000.0,
-                ValueType.USDT, 1.0,
-                ValueType.USDC, 1.0,
-                ValueType.RUB, 0.0109, // ~92 RUB за 1 USD
-                ValueType.EUR, 1.08
+                ValueType.RUB, 0.0109,
+                ValueType.COUPONS, 1.0
         );
 
         Double fromUsd = usdRates.get(fromCurrency);
@@ -126,7 +118,7 @@ public class ExchangeRateCache {
             return fromUsd / toUsd;
         }
 
-        return 1.0; // fallback
+        return 1.0;
     }
 
     private void cleanupExpiredCache() {

@@ -1,10 +1,12 @@
 package com.seeewo4kin.bot.service;
 
 import com.seeewo4kin.bot.Entity.Application;
+import com.seeewo4kin.bot.Enums.ApplicationStatus;
 import com.seeewo4kin.bot.repository.ApplicationRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Arrays;
 import java.util.List;
 
 @Service
@@ -49,5 +51,23 @@ public class ApplicationServiceImpl implements ApplicationService {
     @Transactional(readOnly = true)
     public List<Application> findByUser(Long id) {
         return applicationRepository.findByUserId(id);
+    }
+
+    @Override
+    public List<Application> findActiveApplications() {
+        return applicationRepository.findByStatusIn(
+                Arrays.asList(ApplicationStatus.FREE, ApplicationStatus.IN_WORK)
+        );
+    }
+
+    @Override
+    public List<Application> findByUserAndStatusIn(Long userId, List<ApplicationStatus> statuses) {
+        return applicationRepository.findByUserIdAndStatusIn(userId, statuses);
+    }
+
+    @Override
+    public List<Application> findCompletedApplicationsByUser(Long userId) {
+        return applicationRepository.findByUserIdAndStatusIn(userId,
+                Arrays.asList(ApplicationStatus.CLOSED));
     }
 }

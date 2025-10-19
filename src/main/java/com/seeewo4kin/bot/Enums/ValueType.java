@@ -2,12 +2,8 @@ package com.seeewo4kin.bot.Enums;
 
 public enum ValueType {
     RUB("🇷🇺 RUB"),
-    USD("🇺🇸 USD"),
-    EUR("🇪🇺 EUR"),
     BTC("₿ Bitcoin"),
-    ETH("Ξ Ethereum"),
-    USDT("💵 USDT"),
-    USDC("USDC");
+    COUPONS("🎫 Купоны");
 
     private final String displayName;
 

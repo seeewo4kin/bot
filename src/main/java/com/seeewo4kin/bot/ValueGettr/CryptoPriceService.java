@@ -1,10 +1,7 @@
 package com.seeewo4kin.bot.ValueGettr;
 
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -12,294 +9,317 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class CryptoPriceService {
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
 
-    @Value("${crypto.api.key:}")
-    private String apiKey;
-
+    // Кэш для хранения цен
     private final Map<String, Double> priceCache = new ConcurrentHashMap<>();
-    private final Map<String, Long> lastCallTimestamps = new ConcurrentHashMap<>();
-    private static final long RATE_LIMIT_DELAY = 61000; // 61 seconds for CoinGecko
+    private final Map<String, Map<String, Double>> multiplePriceCache = new ConcurrentHashMap<>();
 
-    // Fallback rates in case APIs are unavailable
+    // Executor для асинхронных задач
+    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(3);
+
+    // Символы для Binance API
+    private static final Map<String, String> BINANCE_SYMBOLS = Map.of(
+            "BTC", "BTCUSDT",
+            "ETH", "ETHUSDT",
+            "XMR", "XMRUSDT",
+            "LTC", "LTCUSDT",
+            "USDT", "USDTUSDT" // Для USDT используем статическое значение
+    );
+
+    // Fallback rates
     private static final Map<String, Map<String, Double>> FALLBACK_RATES = Map.of(
-            "BTC", Map.of("USD", 45000.0, "EUR", 41000.0, "RUB", 4000000.0),
-            "ETH", Map.of("USD", 3000.0, "EUR", 2700.0, "RUB", 270000.0),
-            "USDT", Map.of("USD", 1.0, "EUR", 0.92, "RUB", 92.0),
-            "USDC", Map.of("USD", 1.0, "EUR", 0.92, "RUB", 92.0)
+            "BTC", Map.of("USD", 45000.0, "RUB", 4000000.0, "EUR", 41000.0),
+            "ETH", Map.of("USD", 3000.0, "RUB", 270000.0, "EUR", 2700.0),
+            "XMR", Map.of("USD", 150.0, "RUB", 13500.0, "EUR", 140.0),
+            "LTC", Map.of("USD", 75.0, "RUB", 6800.0, "EUR", 70.0),
+            "USDT", Map.of("USD", 1.0, "RUB", 92.0, "EUR", 0.92),
+            "USDC", Map.of("USD", 1.0, "RUB", 92.0, "EUR", 0.92),
+            "COUPONS", Map.of("USD", 1.0, "RUB", 92.0, "EUR", 0.92)
     );
 
     public CryptoPriceService() {
         this.restTemplate = new RestTemplate();
         this.objectMapper = new ObjectMapper();
+
+        // Запускаем периодическое обновление цен каждые 5 минут
+        scheduler.scheduleAtFixedRate(this::updateAllPrices, 0, 5, TimeUnit.MINUTES);
     }
 
     /**
-     * Получение курса через CoinGecko API с rate limiting
+     * Обновление всех цен через Binance API
      */
-    @Cacheable(value = "cryptoPrices", unless = "#result == null")
-    public Double getPriceFromCoinGecko(String cryptoId, String currency) {
-        enforceRateLimit("coingecko");
-
+    private void updateAllPrices() {
         try {
-            String url = String.format("https://api.coingecko.com/api/v3/simple/price?ids=%s&vs_currencies=%s",
-                    cryptoId, currency.toLowerCase());
+            // Обновляем цены для основных криптовалют
+            updatePriceAsync("BTC");
+            updatePriceAsync("ETH");
+            updatePriceAsync("XMR");
+            updatePriceAsync("LTC");
+            updatePriceAsync("USDT");
 
-            String response = restTemplate.getForObject(url, String.class);
-            JsonNode root = objectMapper.readTree(response);
+            // Получаем курсы фиатных валют
+            updateFiatRates();
 
-            return root.path(cryptoId).path(currency.toLowerCase()).asDouble();
-        } catch (HttpClientErrorException.TooManyRequests e) {
-            // Return fallback value if rate limited
-            return getFallbackPrice(cryptoId, currency);
         } catch (Exception e) {
-            // Return fallback for any other error
-            return getFallbackPrice(cryptoId, currency);
+            System.err.println("Error updating prices: " + e.getMessage());
         }
     }
 
     /**
-     * Получение курса через Binance API с правильными символами
+     * Асинхронное обновление цены для конкретной криптовалюты
      */
-    @Cacheable(value = "cryptoPrices", unless = "#result == null")
-    public Double getPriceFromBinance(String symbol) {
-        enforceRateLimit("binance");
+    private void updatePriceAsync(String crypto) {
+        scheduler.execute(() -> {
+            try {
+                if ("USDT".equals(crypto) || "USDC".equals(crypto)) {
+                    // Для стейблкоинов используем фиксированные значения
+                    Map<String, Double> prices = new HashMap<>();
+                    prices.put("USD", 1.0);
+                    // RUB и EUR будут обновлены в updateFiatRates()
+                    multiplePriceCache.put(crypto, prices);
+                    return;
+                }
 
+                String symbol = BINANCE_SYMBOLS.get(crypto);
+                if (symbol == null) {
+                    System.err.println("No Binance symbol for: " + crypto);
+                    return;
+                }
+
+                // Получаем цену с Binance
+                Double usdPrice = getPriceFromBinance(symbol);
+                if (usdPrice != null && usdPrice > 0) {
+                    Map<String, Double> prices = new HashMap<>();
+                    prices.put("USD", usdPrice);
+
+                    // Получаем текущие курсы RUB и EUR
+                    Double usdToRub = priceCache.get("USD_RUB");
+                    Double usdToEur = priceCache.get("USD_EUR");
+
+                    if (usdToRub != null) {
+                        prices.put("RUB", usdPrice * usdToRub);
+                    }
+                    if (usdToEur != null) {
+                        prices.put("EUR", usdPrice * usdToEur);
+                    }
+
+                    multiplePriceCache.put(crypto, prices);
+
+                    // Также обновляем отдельные цены в основном кэше
+                    priceCache.put(crypto + "_USD", usdPrice);
+                    if (usdToRub != null) {
+                        priceCache.put(crypto + "_RUB", usdPrice * usdToRub);
+                    }
+                    if (usdToEur != null) {
+                        priceCache.put(crypto + "_EUR", usdPrice * usdToEur);
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("Error updating price for " + crypto + ": " + e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * Получение цены с Binance API
+     */
+    private Double getPriceFromBinance(String symbol) {
         try {
-            // Ensure proper symbol format
-            String formattedSymbol = getCorrectBinanceSymbol(symbol);
-            String url = String.format("https://api.binance.com/api/v3/ticker/price?symbol=%s", formattedSymbol);
+            String url = "https://api.binance.com/api/v3/ticker/price?symbol=" + symbol;
 
+            // Добавляем таймауты для избежания блокировок
             String response = restTemplate.getForObject(url, String.class);
             JsonNode root = objectMapper.readTree(response);
 
             return root.path("price").asDouble();
-        } catch (HttpClientErrorException.BadRequest e) {
-            // Try alternative symbols or return fallback
-            return tryAlternativeBinanceSymbols(symbol);
         } catch (Exception e) {
-            return getFallbackPriceFromSymbol(symbol);
+            System.err.println("Error fetching price from Binance for " + symbol + ": " + e.getMessage());
+            return getFallbackPrice(symbol.replace("USDT", ""), "USD");
         }
     }
 
     /**
-     * Универсальный метод для получения цены с улучшенной обработкой ошибок
+     * Обновление курсов фиатных валют
+     */
+    private void updateFiatRates() {
+        scheduler.execute(() -> {
+            try {
+                // Используем ЦБ РФ или другие источники для курсов
+                // Для примера, можно использовать CoinGecko для фиатных пар или другие API
+                updateUsdToRubRate();
+                updateUsdToEurRate();
+
+            } catch (Exception e) {
+                System.err.println("Error updating fiat rates: " + e.getMessage());
+                // Используем fallback значения
+                priceCache.put("USD_RUB", 92.0);
+                priceCache.put("USD_EUR", 0.92);
+            }
+        });
+    }
+
+    /**
+     * Обновление курса USD/RUB
+     */
+    private void updateUsdToRubRate() {
+        try {
+            // Используем API ЦБ РФ или другие надежные источники
+            String url = "https://www.cbr-xml-daily.ru/daily_json.js";
+            String response = restTemplate.getForObject(url, String.class);
+            JsonNode root = objectMapper.readTree(response);
+
+            Double usdRate = root.path("Valute").path("USD").path("Value").asDouble();
+            if (usdRate != null && usdRate > 0) {
+                priceCache.put("USD_RUB", usdRate);
+
+                // Обновляем все цены в RUB
+                updateAllPricesInRub(usdRate);
+            }
+        } catch (Exception e) {
+            // Fallback значение
+            priceCache.put("USD_RUB", 92.0);
+            System.err.println("Error updating USD/RUB rate: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Обновление курса USD/EUR
+     */
+    private void updateUsdToEurRate() {
+        try {
+            // Используем ECB API или другие источники
+            String url = "https://api.exchangerate.host/latest?base=USD&symbols=EUR";
+            String response = restTemplate.getForObject(url, String.class);
+            JsonNode root = objectMapper.readTree(response);
+
+            Double eurRate = root.path("rates").path("EUR").asDouble();
+            if (eurRate != null && eurRate > 0) {
+                priceCache.put("USD_EUR", eurRate);
+
+                // Обновляем все цены в EUR
+                updateAllPricesInEur(eurRate);
+            }
+        } catch (Exception e) {
+            // Fallback значение
+            priceCache.put("USD_EUR", 0.92);
+            System.err.println("Error updating USD/EUR rate: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Обновление всех цен в RUB при изменении курса
+     */
+    private void updateAllPricesInRub(Double usdToRubRate) {
+        for (String crypto : multiplePriceCache.keySet()) {
+            Map<String, Double> prices = multiplePriceCache.get(crypto);
+            Double usdPrice = prices.get("USD");
+            if (usdPrice != null) {
+                prices.put("RUB", usdPrice * usdToRubRate);
+                priceCache.put(crypto + "_RUB", usdPrice * usdToRubRate);
+            }
+        }
+    }
+
+    /**
+     * Обновление всех цен в EUR при изменении курса
+     */
+    private void updateAllPricesInEur(Double usdToEurRate) {
+        for (String crypto : multiplePriceCache.keySet()) {
+            Map<String, Double> prices = multiplePriceCache.get(crypto);
+            Double usdPrice = prices.get("USD");
+            if (usdPrice != null) {
+                prices.put("EUR", usdPrice * usdToEurRate);
+                priceCache.put(crypto + "_EUR", usdPrice * usdToEurRate);
+            }
+        }
+    }
+
+    /**
+     * Получение текущей цены с обработкой ошибок и fallback'ом
      */
     public Double getCurrentPrice(String cryptoCurrency, String fiatCurrency) {
         String cacheKey = cryptoCurrency + "_" + fiatCurrency;
 
-        // Проверяем кэш
-        if (priceCache.containsKey(cacheKey)) {
-            return priceCache.get(cacheKey);
-        }
-
-        Double price = null;
-
-        try {
-            switch (cryptoCurrency.toUpperCase()) {
-                case "BTC":
-                    price = getBitcoinPrice(fiatCurrency);
-                    break;
-                case "ETH":
-                    price = getEthereumPrice(fiatCurrency);
-                    break;
-                case "USDT":
-                    price = getUsdtPrice(fiatCurrency);
-                    break;
-                case "USDC":
-                    price = getUsdcPrice(fiatCurrency);
-                    break;
-                default:
-                    price = getFallbackPrice(cryptoCurrency, fiatCurrency);
-            }
-        } catch (Exception e) {
-            price = getFallbackPrice(cryptoCurrency, fiatCurrency);
-        }
-
+        // Пробуем получить из кэша
+        Double price = priceCache.get(cacheKey);
         if (price != null) {
-            priceCache.put(cacheKey, price);
+            return price;
         }
 
-        return price;
+        // Если нет в кэше, используем fallback
+        return getFallbackPrice(cryptoCurrency, fiatCurrency);
     }
 
     /**
-     * Методы для конкретных криптовалют с улучшенной обработкой ошибок
-     */
-    public Double getBitcoinPrice(String currency) {
-        // Пробуем CoinGecko
-        Double price = getPriceFromCoinGecko("bitcoin", currency);
-        if (price != null && price > 0) return price;
-
-        // Если не получилось, пробуем Binance
-        try {
-            return getPriceFromBinance("BTC" + getCorrectFiatSymbol(currency));
-        } catch (Exception e) {
-            return getFallbackPrice("BTC", currency);
-        }
-    }
-
-    public Double getEthereumPrice(String currency) {
-        Double price = getPriceFromCoinGecko("ethereum", currency);
-        if (price != null && price > 0) return price;
-
-        try {
-            return getPriceFromBinance("ETH" + getCorrectFiatSymbol(currency));
-        } catch (Exception e) {
-            return getFallbackPrice("ETH", currency);
-        }
-    }
-
-    public Double getUsdtPrice(String currency) {
-        // USDT обычно привязан к доллару
-        if ("USD".equalsIgnoreCase(currency)) {
-            return 1.0;
-        }
-
-        // Для других валют используем прямые пары если возможно
-        try {
-            // Попробуем получить курс через USDT пары
-            String pair = "USDT" + getCorrectFiatSymbol(currency);
-            Double price = getPriceFromBinance(pair);
-            if (price != null && price > 0) return price;
-        } catch (Exception e) {
-            // Если не получилось, используем fallback
-        }
-
-        return getFallbackPrice("USDT", currency);
-    }
-
-    public Double getUsdcPrice(String currency) {
-        // USDC также привязан к доллару
-        if ("USD".equalsIgnoreCase(currency)) {
-            return 1.0;
-        }
-        return getUsdtPrice(currency); // Используем ту же логику что и для USDT
-    }
-
-    /**
-     * Получение курсов для нескольких валют сразу с обработкой ошибок
+     * Получение цен для нескольких валют сразу
      */
     public Map<String, Double> getMultiplePrices(String cryptoCurrency) {
-        Map<String, Double> prices = new HashMap<>();
-
-        try {
-            prices.put("RUB", getCurrentPrice(cryptoCurrency, "RUB"));
-            prices.put("USD", getCurrentPrice(cryptoCurrency, "USD"));
-            prices.put("EUR", getCurrentPrice(cryptoCurrency, "EUR"));
-        } catch (Exception e) {
-            // Если произошла ошибка, используем fallback значения
-            Map<String, Double> fallback = FALLBACK_RATES.getOrDefault(cryptoCurrency.toUpperCase(),
-                    Map.of("USD", 1.0, "EUR", 0.92, "RUB", 92.0));
-
-            prices.putAll(fallback);
+        Map<String, Double> prices = multiplePriceCache.get(cryptoCurrency);
+        if (prices != null && !prices.isEmpty()) {
+            return new HashMap<>(prices); // Возвращаем копию для безопасности
         }
 
-        // Ensure no null values
-        prices.putIfAbsent("RUB", FALLBACK_RATES.getOrDefault(cryptoCurrency.toUpperCase(),
-                Map.of("RUB", 92.0)).get("RUB"));
-        prices.putIfAbsent("USD", FALLBACK_RATES.getOrDefault(cryptoCurrency.toUpperCase(),
-                Map.of("USD", 1.0)).get("USD"));
-        prices.putIfAbsent("EUR", FALLBACK_RATES.getOrDefault(cryptoCurrency.toUpperCase(),
-                Map.of("EUR", 0.92)).get("EUR"));
-
-        return prices;
+        // Если нет в кэше, используем fallback
+        return getFallbackMultiplePrices(cryptoCurrency);
     }
 
     /**
-     * Вспомогательные методы
+     * Fallback цены
      */
-    private String getCorrectBinanceSymbol(String symbol) {
-        // Преобразуем символы к правильному формату для Binance
-        Map<String, String> symbolMappings = Map.of(
-                "BTCRUB", "BTCRUB",
-                "ETHRUB", "ETHRUB",
-                "USDTRUB", "USDTRUB",
-                "USDTUSD", "BUSDUSDT", // USDT к USD через BUSD
-                "BTCUSD", "BTCUSDT",
-                "ETHUSD", "ETHUSDT",
-                "USDTEUR", "EURUSDT"
-        );
-
-        return symbolMappings.getOrDefault(symbol.toUpperCase(), symbol.toUpperCase());
-    }
-
-    private Double tryAlternativeBinanceSymbols(String symbol) {
-        // Пробуем альтернативные символы
-        Map<String, String[]> alternatives = Map.of(
-                "USDTRUB", new String[]{"USDTRUB", "RUBUSDT"},
-                "BTCRUB", new String[]{"BTCRUB", "RUBBTC"},
-                "ETHRUB", new String[]{"ETHRUB", "RUBETH"}
-        );
-
-        String[] altSymbols = alternatives.get(symbol.toUpperCase());
-        if (altSymbols != null) {
-            for (String altSymbol : altSymbols) {
-                try {
-                    Double price = getPriceFromBinance(altSymbol);
-                    if (price != null && price > 0) return price;
-                } catch (Exception e) {
-                    continue;
-                }
-            }
-        }
-
-        return getFallbackPriceFromSymbol(symbol);
-    }
-
-    private String getCorrectFiatSymbol(String currency) {
-        Map<String, String> fiatMappings = Map.of(
-                "USD", "USDT",
-                "EUR", "EUR",
-                "RUB", "RUB"
-        );
-        return fiatMappings.getOrDefault(currency.toUpperCase(), currency.toUpperCase());
-    }
-
-    private Double getFallbackPrice(String cryptoId, String currency) {
-        Map<String, Double> cryptoRates = FALLBACK_RATES.get(cryptoId.toUpperCase());
+    private Double getFallbackPrice(String crypto, String fiat) {
+        Map<String, Double> cryptoRates = FALLBACK_RATES.get(crypto.toUpperCase());
         if (cryptoRates != null) {
-            return cryptoRates.getOrDefault(currency.toUpperCase(), 1.0);
+            return cryptoRates.getOrDefault(fiat.toUpperCase(), 1.0);
         }
         return 1.0;
     }
 
-    private Double getFallbackPriceFromSymbol(String symbol) {
-        // Простая логика для получения fallback из символа
-        if (symbol.contains("BTC")) {
-            return getFallbackPrice("BTC", symbol.replace("BTC", ""));
-        } else if (symbol.contains("ETH")) {
-            return getFallbackPrice("ETH", symbol.replace("ETH", ""));
-        } else if (symbol.contains("USDT")) {
-            return getFallbackPrice("USDT", symbol.replace("USDT", ""));
-        }
-        return 1.0;
-    }
-
-    private void enforceRateLimit(String apiName) {
-        Long lastCall = lastCallTimestamps.get(apiName);
-        if (lastCall != null) {
-            long timeSinceLastCall = System.currentTimeMillis() - lastCall;
-            if (timeSinceLastCall < RATE_LIMIT_DELAY) {
-                try {
-                    Thread.sleep(RATE_LIMIT_DELAY - timeSinceLastCall);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            }
-        }
-        lastCallTimestamps.put(apiName, System.currentTimeMillis());
+    private Map<String, Double> getFallbackMultiplePrices(String crypto) {
+        return FALLBACK_RATES.getOrDefault(crypto.toUpperCase(),
+                Map.of("USD", 1.0, "RUB", 92.0, "EUR", 0.92));
     }
 
     /**
-     * Очистка кэша каждые 5 минут
+     * Метод для принудительного обновления цен (можно вызывать извне)
      */
-    @Scheduled(fixedRate = 300000)
-    public void clearCache() {
-        priceCache.clear();
+    public void forcePriceUpdate() {
+        updateAllPrices();
+    }
+
+    /**
+     * Получение статуса кэша (для мониторинга)
+     */
+    public Map<String, Object> getCacheStatus() {
+        Map<String, Object> status = new HashMap<>();
+        status.put("cachedCryptos", multiplePriceCache.size());
+        status.put("totalCachedPrices", priceCache.size());
+        status.put("usdToRub", priceCache.get("USD_RUB"));
+        status.put("usdToEur", priceCache.get("USD_EUR"));
+        return status;
+    }
+
+    @Scheduled(fixedRate = 3000) // 5 минут
+    public void scheduledPriceUpdate() {
+        updateAllPrices();
+    }
+
+    public void shutdown() {
+        scheduler.shutdown();
+        try {
+            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                scheduler.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            scheduler.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }

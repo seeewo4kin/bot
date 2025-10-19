@@ -9,4 +9,5 @@ public interface UserService {
     void delete(Long id);
     User find(Long id);
     User findByTelegramId(Long telegramId);
+    int getActiveUsersCount(); // Добавляем новый метод
 }

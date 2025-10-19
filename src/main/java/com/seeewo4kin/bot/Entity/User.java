@@ -5,6 +5,8 @@ import jakarta.persistence.*;
 import lombok.Data;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 
 @Entity
 @Table(name = "users")
@@ -24,59 +26,27 @@ public class User {
     @Enumerated(EnumType.STRING)
     private UserState state = UserState.START;
 
+    // Статистика
+    private Integer completedBuyApplications = 0;
+    private Integer completedSellApplications = 0;
+    private Integer totalApplications = 0;
+    private Double totalBuyAmount = 0.0;
+    private Double totalSellAmount = 0.0;
+    private Double totalCommissionPaid = 0.0;
+
+    // Реферальная система
+    private String usedReferralCode;
+    private Double referralEarnings = 0.0;
+    private Integer referralCount = 0;
+
+    @OneToMany(mappedBy = "owner")
+    private List<ReferralCode> referralCodes = new ArrayList<>();
+
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
-    }
-
-    public Long getId() {
-        return id;
-    }
-
-    public Long getTelegramId() {
-        return telegramId;
-    }
-
-    public String getUsername() {
-        return username;
-    }
-
-    public String getFirstName() {
-        return firstName;
-    }
-
-    public String getLastName() {
-        return lastName;
-    }
-
-    public UserState getState() {
-        return state;
-    }
-
-    public LocalDateTime getCreatedAt() {
-        return createdAt;
-    }
-
-    public void setTelegramId(Long telegramId) {
-        this.telegramId = telegramId;
-    }
-
-    public void setUsername(String username) {
-        this.username = username;
-    }
-
-    public void setFirstName(String firstName) {
-        this.firstName = firstName;
-    }
-
-    public void setLastName(String lastName) {
-        this.lastName = lastName;
-    }
-
-    public void setState(UserState state) {
-        this.state = state;
     }
 }
