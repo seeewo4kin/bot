@@ -5,6 +5,8 @@ import com.seeewo4kin.bot.Enums.ValueType;
 import jakarta.persistence.*;
 import lombok.Data;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.UUID;
 
 @Entity
 @Table(name = "applications")
@@ -13,6 +15,9 @@ public class Application {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+
+    @Column(unique = true, nullable = false)
+    private String uuid = UUID.randomUUID().toString();
 
     private String title;
     private String description;
@@ -30,7 +35,7 @@ public class Application {
     private double calculatedGetValue;
 
     @Enumerated(EnumType.STRING)
-    private ApplicationStatus status = ApplicationStatus.FREE; // Новое поле
+    private ApplicationStatus status = ApplicationStatus.FREE;
 
     @ManyToOne
     @JoinColumn(name = "coupon_id")
@@ -38,8 +43,14 @@ public class Application {
 
     private Double finalAmountAfterDiscount;
 
+    private Boolean isVip = false;
+    private String walletAddress;
+
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
+
+    @Column(name = "expires_at")
+    private LocalDateTime expiresAt;
 
     @ManyToOne
     @JoinColumn(name = "user_id")
@@ -48,5 +59,18 @@ public class Application {
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
+        expiresAt = LocalDateTime.now().plusHours(1); // Время жизни 60 минут
+    }
+
+    public boolean isExpired() {
+        return LocalDateTime.now().isAfter(expiresAt);
+    }
+
+    public String getFormattedExpiresAt() {
+        return expiresAt.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")) + " по МСК";
+    }
+
+    public long getMinutesLeft() {
+        return java.time.Duration.between(LocalDateTime.now(), expiresAt).toMinutes();
     }
 }

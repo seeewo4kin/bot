@@ -15,7 +15,6 @@ public class ApplicationServiceImpl implements ApplicationService {
 
     private final ApplicationRepository applicationRepository;
 
-    // Убираем UserServiceImpl из конструктора, если он не используется в методах
     public ApplicationServiceImpl(ApplicationRepository applicationRepository) {
         this.applicationRepository = applicationRepository;
     }

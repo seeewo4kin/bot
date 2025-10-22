@@ -202,6 +202,12 @@ public class MessageProcessor {
             case SELL_MENU:
                 processSellMenu(chatId, user, text, bot);
                 break;
+            case CONFIRMING_VIP:
+                processVipConfirmation(chatId, user, text, bot);
+                break;
+            case ENTERING_WALLET:
+                processEnteringWallet(chatId, user, text, bot);
+                break;
             case ENTERING_BUY_AMOUNT_RUB:
                 processEnteringBuyAmountRub(chatId, user, text, bot);
                 break;
@@ -319,18 +325,21 @@ public class MessageProcessor {
         User user = application.getUser();
 
         if (application.getStatus() == ApplicationStatus.CLOSED) {
+            double cashback = 0.0;
+
             if (application.getUserValueGetType() == ValueType.BTC) {
+                // Покупка BTC - начисляем 3% кешбека от суммы
                 user.setCompletedBuyApplications(user.getCompletedBuyApplications() + 1);
                 user.setTotalBuyAmount(user.getTotalBuyAmount() + application.getCalculatedGiveValue());
-                double cashback = application.getCalculatedGiveValue() * 0.01;
-                user.setBonusBalance(user.getBonusBalance() + cashback);
+                cashback = application.getCalculatedGiveValue() * 0.03;
             } else {
+                // Продажа BTC - начисляем 3% кешбека от суммы
                 user.setCompletedSellApplications(user.getCompletedSellApplications() + 1);
                 user.setTotalSellAmount(user.getTotalSellAmount() + application.getCalculatedGetValue());
-                double cashback = application.getCalculatedGetValue() * 0.005;
-                user.setBonusBalance(user.getBonusBalance() + cashback);
+                cashback = application.getCalculatedGetValue() * 0.03;
             }
 
+            user.setBonusBalance(user.getBonusBalance() + cashback);
             user.setTotalApplications(user.getTotalApplications() + 1);
             userService.update(user);
         }
@@ -437,9 +446,194 @@ public class MessageProcessor {
     }
 
     private void showMainMenu(Long chatId, User user, MyBot bot) {
-        String message = "💎 Главное меню\n\nВыберите действие:";
+        String message = """
+        💼 Добро пожаловать в обменник — 𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐂𝐇𝐀𝐍𝐆𝐄
+        🚀 Быстрый и надёжный обмен RUB → BTC
+        ⚖️ Честные курсы, без задержек и скрытых комиссий.
+        💸 БОНУС: после каждой операции получаете 3% кешбэк на свой баланс!
+
+        📲 Как всё работает: 
+        1️⃣ Нажмите 💵 Купить или 💰 Продать 
+        2️⃣ Введите нужную сумму 🪙 
+        3️⃣ Укажите свой кошелёк 🔐
+        4️⃣ Выберите приоритет (🔹обычный / 👑 VIP) 
+        5️⃣ Подтвердите заявку ✅ 
+        6️⃣ Если готовы оплачивать — перешлите заявку оператору ☎️
+
+        ⚙️ Дополнительная информация: 
+        👑 VIP-приоритет — всего 300₽, заявка проходит мгновенно
+        📊 Загруженность сети BTC: низкая 🚥 
+        🕒 Время подтверждения: 5–20 минут 
+        💬 Отзывы клиентов: [@cosanostra_feedback] 
+        🧰 Техподдержка 24/7: всегда онлайн, решим любой вопрос 🔧
+
+        COSA NOSTRA CHANGE — тут уважают тех, кто ценит скорость, честность и результат. ⚡
+        """;
+
         lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createMainMenuKeyboard(user)));
     }
+    private void processBuyConfirmation(Long chatId, User user, double rubAmount, double btcAmount,
+                                        String inputType, String outputType, MyBot bot) {
+
+        if (rubAmount < 1000) {
+            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
+                    "❌ Минимальная сумма заявки 1000 рублей", createAmountInputKeyboard()));
+            return;
+        }
+
+        double commission = commissionService.calculateCommission(rubAmount);
+        double totalAmount = commissionService.calculateTotalWithCommission(rubAmount);
+
+        Application application = new Application();
+        application.setUser(user);
+        application.setUserValueGetType(ValueType.BTC);
+        application.setUserValueGiveType(ValueType.RUB);
+        application.setUserValueGetValue(btcAmount);
+        application.setUserValueGiveValue(totalAmount);
+        application.setCalculatedGetValue(btcAmount);
+        application.setCalculatedGiveValue(totalAmount);
+        application.setTitle("Покупка BTC за RUB");
+        application.setStatus(ApplicationStatus.FREE);
+
+        temporaryApplications.put(user.getId(), application);
+
+        String calculationMessage = String.format("""
+        💰 Расчет операции:
+        
+        💸 Сумма: %.2f ₽
+        💰 Комиссия: %.2f ₽ (%.1f%%)
+        💸 Итого к оплате: %.2f ₽
+        ₿ Вы получите: %.8f BTC
+        
+        Хотите добавить 👑 VIP-приоритет за 300₽?
+        Ваша заявка будет обрабатываться в первую очередь!
+        """, rubAmount, commission, commissionService.getCommissionPercent(rubAmount),
+                totalAmount, btcAmount);
+
+        ReplyKeyboardMarkup keyboard = createVipConfirmationKeyboard();
+        lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, calculationMessage, keyboard));
+
+        user.setState(UserState.CONFIRMING_VIP);
+        userService.update(user);
+    }
+
+
+    private void processVipConfirmation(Long chatId, User user, String text, MyBot bot) {
+        Application application = temporaryApplications.get(user.getId());
+
+        if (application == null) {
+            processMainMenu(chatId, user, bot);
+            return;
+        }
+
+        switch (text) {
+            case "👑 Да, добавить VIP":
+                application.setIsVip(true);
+                application.setCalculatedGiveValue(application.getCalculatedGiveValue() + 300);
+                temporaryApplications.put(user.getId(), application);
+
+                String vipMessage = String.format("""
+                ✅ VIP-приоритет добавлен!
+                
+                💰 Итоговая сумма к оплате: %.2f ₽
+                ₿ Вы получите: %.8f BTC
+                
+                Теперь введите адрес вашего Bitcoin-кошелька:
+                """, application.getCalculatedGiveValue(), application.getCalculatedGetValue());
+
+                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, vipMessage, createBackKeyboard()));
+                user.setState(UserState.ENTERING_WALLET);
+                break;
+
+            case "🔹 Нет, обычный приоритет":
+                String regularMessage = """
+                ✅ Обычный приоритет выбран.
+                
+                Теперь введите адрес вашего Bitcoin-кошелька:
+                """;
+                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, regularMessage, createBackKeyboard()));
+                user.setState(UserState.ENTERING_WALLET);
+                break;
+
+            case "🔙 Назад":
+                user.setState(UserState.BUY_MENU);
+                userService.update(user);
+                showBuyMenu(chatId, bot);
+                break;
+
+            case "🔙 Главное меню":
+                processMainMenu(chatId, user, bot);
+                break;
+
+            default:
+                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
+                        "❌ Пожалуйста, выберите вариант приоритета", createVipConfirmationKeyboard()));
+        }
+
+        userService.update(user);
+    }
+
+    private void processEnteringWallet(Long chatId, User user, String text, MyBot bot) {
+        Application application = temporaryApplications.get(user.getId());
+
+        if (application == null) {
+            processMainMenu(chatId, user, bot);
+            return;
+        }
+
+        if (text.equals("🔙 Назад")) {
+            user.setState(UserState.CONFIRMING_VIP);
+            userService.update(user);
+            processVipConfirmation(chatId, user, "🔙 Назад", bot); // Вернемся к выбору VIP
+            return;
+        }
+
+        if (text.equals("🔙 Главное меню")) {
+            processMainMenu(chatId, user, bot);
+            return;
+        }
+
+        // Простая валидация BTC-адреса (можно улучшить)
+        if (text.length() < 26 || text.length() > 35) {
+            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
+                    "❌ Неверный формат Bitcoin-адреса. Пожалуйста, проверьте и введите снова:",
+                    createBackKeyboard()));
+            return;
+        }
+
+        application.setWalletAddress(text);
+        applicationService.create(application);
+        temporaryApplications.remove(user.getId());
+
+        // Формируем сообщение о готовой заявке
+        String applicationMessage = String.format("""
+        ✅ Готовая заявка
+        📝 ID: %s
+        🕰️ Срок действия: до %s (⏳ %d минут)
+        💳 Адрес для оплаты: будет предоставлен оператором
+        💵 Сумма к оплате: %.2f ₽
+        🪙 Валюта: BTC
+        %s
+
+        📩 Скопируйте или перешлите заявку оператору: @cosanostra_support
+        🤝 Благодарим за доверие к COSA NOSTRA CHANGE
+        ⚠️ Важно: оператор НИКОГДА не пишет первым‼️
+        Берегите свои средства 💼
+        """,
+                application.getUuid().substring(0, 8),
+                application.getFormattedExpiresAt(),
+                application.getMinutesLeft(),
+                application.getCalculatedGiveValue(),
+                application.getIsVip() ? "👑 VIP-приоритет: ДА" : "🔹 Приоритет: обычный"
+        );
+
+        lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, applicationMessage, createMainMenuKeyboard(user)));
+
+        user.setState(UserState.MAIN_MENU);
+        userService.update(user);
+    }
+
+
 
     private void processMainMenuCommand(Long chatId, User user, String text, MyBot bot) {
         switch (text) {
@@ -626,24 +820,25 @@ public class MessageProcessor {
 
     private void showProfile(Long chatId, User user, MyBot bot) {
         String message = String.format("""
-            👤 Ваш профиль:
-            
-            📊 Статистика заявок:
-            ✅ Успешно проведено: %d
-            💰 Куплено: %.2f ₽
-            💸 Продано: %.2f ₽
-            📈 Всего заявок: %d
-            💸 Комиссий уплачено: %.2f ₽
-            
-            📈 Реферальная система:
-            👥 Приглашено: %d
-            💰 Заработано: %.2f ₽
-            """,
+        👤 Ваш профиль:
+        
+        💰 Бонусный баланс: %.2f ₽
+        
+        📊 Статистика заявок:
+        ✅ Успешно проведено: %d
+        💸 Потрачено: %.2f ₽
+        💰 Получено: %.2f ₽
+        📈 Всего заявок: %d
+        
+        📈 Реферальная система:
+        👥 Приглашено: %d
+        💰 Заработано: %.2f ₽
+        """,
+                user.getBonusBalance(),
                 user.getCompletedBuyApplications() + user.getCompletedSellApplications(),
                 user.getTotalBuyAmount(),
                 user.getTotalSellAmount(),
                 user.getTotalApplications(),
-                user.getTotalCommissionPaid(),
                 user.getReferralCount(),
                 user.getReferralEarnings()
         );
@@ -927,49 +1122,6 @@ public class MessageProcessor {
         }
     }
 
-    private void processBuyConfirmation(Long chatId, User user, double rubAmount, double btcAmount,
-                                        String inputType, String outputType, MyBot bot) {
-
-        if (rubAmount < 1000) {
-            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                    "❌ Минимальная сумма заявки 1000 рублей", createAmountInputKeyboard()));
-            return;
-        }
-
-        double commission = commissionService.calculateCommission(rubAmount);
-        double totalAmount = commissionService.calculateTotalWithCommission(rubAmount);
-
-        Application application = new Application();
-        application.setUser(user);
-        application.setUserValueGetType(ValueType.BTC);
-        application.setUserValueGiveType(ValueType.RUB);
-        application.setUserValueGetValue(btcAmount);
-        application.setUserValueGiveValue(totalAmount);
-        application.setCalculatedGetValue(btcAmount);
-        application.setCalculatedGiveValue(totalAmount);
-        application.setTitle("Покупка BTC за RUB");
-        application.setStatus(ApplicationStatus.FREE);
-
-        temporaryApplications.put(user.getId(), application);
-
-        String calculationMessage = String.format("""
-        💰 Расчет операции:
-        
-        💸 Сумма: %.2f ₽
-        💰 Комиссия: %.2f ₽ (%.1f%%)
-        💸 Итого к оплате: %.2f ₽
-        ₿ Вы получите: %.8f BTC
-        
-        Хотите применить купон для скидки?
-        """, rubAmount, commission, commissionService.getCommissionPercent(rubAmount),
-                totalAmount, btcAmount);
-
-        ReplyKeyboardMarkup keyboard = createCouponApplicationKeyboard();
-        lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, calculationMessage, keyboard));
-
-        user.setState(UserState.APPLYING_COUPON);
-        userService.update(user);
-    }
 
     private void processMainMenu(Long chatId, User user, MyBot bot) {
         user.setState(UserState.MAIN_MENU);
@@ -1528,6 +1680,44 @@ public class MessageProcessor {
         rows.add(row1);
         rows.add(row2);
         rows.add(row3);
+
+        keyboard.setKeyboard(rows);
+        return keyboard;
+    }
+    private ReplyKeyboardMarkup createVipConfirmationKeyboard() {
+        ReplyKeyboardMarkup keyboard = new ReplyKeyboardMarkup();
+        keyboard.setResizeKeyboard(true);
+        keyboard.setOneTimeKeyboard(false);
+
+        List<KeyboardRow> rows = new ArrayList<>();
+
+        KeyboardRow row1 = new KeyboardRow();
+        row1.add("👑 Да, добавить VIP");
+        row1.add("🔹 Нет, обычный приоритет");
+
+        KeyboardRow row2 = new KeyboardRow();
+        row2.add("🔙 Назад");
+        row2.add("🔙 Главное меню");
+
+        rows.add(row1);
+        rows.add(row2);
+
+        keyboard.setKeyboard(rows);
+        return keyboard;
+    }
+
+    private ReplyKeyboardMarkup createWalletInputKeyboard() {
+        ReplyKeyboardMarkup keyboard = new ReplyKeyboardMarkup();
+        keyboard.setResizeKeyboard(true);
+        keyboard.setOneTimeKeyboard(false);
+
+        List<KeyboardRow> rows = new ArrayList<>();
+
+        KeyboardRow row1 = new KeyboardRow();
+        row1.add("🔙 Назад");
+        row1.add("🔙 Главное меню");
+
+        rows.add(row1);
 
         keyboard.setKeyboard(rows);
         return keyboard;

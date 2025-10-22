@@ -8,6 +8,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+
 @Repository
 public interface ApplicationRepository extends JpaRepository<Application, Long> {
     List<Application> findByUserId(Long userId);
@@ -16,4 +17,7 @@ public interface ApplicationRepository extends JpaRepository<Application, Long> 
 
     @Query("SELECT a FROM Application a WHERE a.user.id = :userId AND a.status = 'CLOSED'")
     List<Application> findCompletedByUser(@Param("userId") Long userId);
+
+    // Новый метод для поиска по UUID (если понадобится)
+    Application findByUuid(String uuid);
 }
