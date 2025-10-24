@@ -18,4 +18,5 @@ public interface CouponRepository extends JpaRepository<Coupon, Long> {
     List<Coupon> findByUserIdAndIsUsedFalse(Long userId);
 
     List<Coupon> findByUserIsNullAndIsActiveTrueAndIsUsedFalse(); // Общие купоны
+    Optional<Coupon> findByCode(String code);
 }

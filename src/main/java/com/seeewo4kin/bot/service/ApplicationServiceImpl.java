@@ -6,6 +6,7 @@ import com.seeewo4kin.bot.repository.ApplicationRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
 
@@ -67,6 +68,32 @@ public class ApplicationServiceImpl implements ApplicationService {
     @Override
     public List<Application> findCompletedApplicationsByUser(Long userId) {
         return applicationRepository.findByUserIdAndStatusIn(userId,
-                Arrays.asList(ApplicationStatus.CLOSED));
+                Arrays.asList(ApplicationStatus.COMPLETED));
+    }
+    @Override
+    public List<Application> findApplicationsByDateRange(LocalDateTime startDate, LocalDateTime endDate) {
+        return applicationRepository.findByCreatedAtBetween(startDate, endDate);
+    }
+
+    @Override
+    public List<Application> findApplicationsByPeriod(String period) {
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime startDate;
+
+        switch (period.toLowerCase()) {
+            case "today":
+                startDate = now.withHour(0).withMinute(0).withSecond(0).withNano(0);
+                break;
+            case "week":
+                startDate = now.minusDays(7);
+                break;
+            case "month":
+                startDate = now.minusMonths(1);
+                break;
+            default:
+                startDate = now.minusDays(1); // по умолчанию за сегодня
+        }
+
+        return findApplicationsByDateRange(startDate, now);
     }
 }

@@ -1,5 +1,6 @@
 package com.seeewo4kin.bot.service;
 
+import com.seeewo4kin.bot.Enums.Emoji;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -14,25 +15,26 @@ public class CaptchaService {
     private final ConcurrentMap<Long, String> userCaptchaAnswers = new ConcurrentHashMap<>();
     private final Random random = new Random();
 
-    private final String[] emojis = {"😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇"};
-
     public CaptchaChallenge generateCaptcha(Long userId) {
-        String correctEmoji = emojis[random.nextInt(emojis.length)];
-        userCaptchaAnswers.put(userId, correctEmoji);
+        // Выбираем случайный смайлик как правильный ответ
+        Emoji correctEmoji = Emoji.getRandom();
+        userCaptchaAnswers.put(userId, correctEmoji.getCode());
 
+        // Создаем список опций (8 смайликов)
         List<String> options = new ArrayList<>();
-        options.add(correctEmoji);
+        options.add(correctEmoji.getCode());
 
-        // Добавляем случайные неправильные варианты
-        while (options.size() < 4) {
-            String randomEmoji = emojis[random.nextInt(emojis.length)];
-            if (!options.contains(randomEmoji)) {
-                options.add(randomEmoji);
+        // Добавляем 7 случайных неправильных вариантов
+        while (options.size() < 8) {
+            Emoji randomEmoji = Emoji.getRandom();
+            if (!options.contains(randomEmoji.getCode())) {
+                options.add(randomEmoji.getCode());
             }
         }
 
+        // Перемешиваем опции
         Collections.shuffle(options);
-        return new CaptchaChallenge(correctEmoji, options);
+        return new CaptchaChallenge(correctEmoji.getCode(), options);
     }
 
     public boolean verifyCaptcha(Long userId, String selectedEmoji) {

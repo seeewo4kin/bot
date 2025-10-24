@@ -69,4 +69,11 @@ public class UserServiceImpl implements UserService {
     public User findByTelegramId(Long telegramId) {
         return userRepository.findByTelegramId(telegramId).orElse(null);
     }
+    @Override
+    public User findByUsername(String username) {
+        if (username.startsWith("@")) {
+            username = username.substring(1);
+        }
+        return userRepository.findByUsername(username).orElse(null);
+    }
 }

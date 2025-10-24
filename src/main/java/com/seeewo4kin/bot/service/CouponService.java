@@ -35,6 +35,12 @@ public class CouponService {
         }
         return originalAmount;
     }
+    public void createCoupon(Coupon coupon) {
+        couponRepository.save(coupon);
+    }
+    public Optional<Coupon> findByCode(String code) {
+        return couponRepository.findByCode(code.toUpperCase());
+    }
 
     public void markCouponAsUsed(Coupon coupon) {
         coupon.setIsUsed(true);

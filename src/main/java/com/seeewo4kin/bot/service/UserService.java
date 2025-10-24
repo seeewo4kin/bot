@@ -10,5 +10,6 @@ public interface UserService {
     User find(Long id);
     User findByTelegramId(Long telegramId);
     int getActiveUsersCount(); // Добавляем новый метод
+    public User findByUsername(String username);
 
 }

@@ -52,6 +52,9 @@ public class Application {
     @Column(name = "expires_at")
     private LocalDateTime expiresAt;
 
+    // Новое поле для хранения ID сообщения в Telegram
+    private Integer telegramMessageId;
+
     @ManyToOne
     @JoinColumn(name = "user_id")
     private User user;
@@ -59,7 +62,7 @@ public class Application {
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
-        expiresAt = LocalDateTime.now().plusHours(1); // Время жизни 60 минут
+        expiresAt = LocalDateTime.now().plusMinutes(5); // 5 минут
     }
 
     public boolean isExpired() {
@@ -71,6 +74,6 @@ public class Application {
     }
 
     public long getMinutesLeft() {
-        return java.time.Duration.between(LocalDateTime.now(), expiresAt).toMinutes();
+        return Math.max(0, java.time.Duration.between(LocalDateTime.now(), expiresAt).toMinutes());
     }
 }
