@@ -1,0 +1,12 @@
+package com.seeewo4kin.bot.Enums;
+
+public enum BonusType {
+    WELCOME_BONUS,
+    FIRST_EXCHANGE_BONUS,
+    ATTRACTION_BONUS,
+    EXCHANGE_COUNT_BONUS,
+    VOLUME_BONUS,
+    MONTHLY_NOMINATION,
+    LIFETIME_EXCHANGE_COUNT,
+    LIFETIME_VOLUME
+}

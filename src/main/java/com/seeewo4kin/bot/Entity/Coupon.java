@@ -21,7 +21,11 @@ public class Coupon {
     private Boolean isActive = true;
     private LocalDateTime validUntil;
 
-    // Привязка к пользователю
+    // Ограничение использования
+    private Integer usageLimit; // null = без ограничений
+    private Integer usedCount = 0;
+
+    // Привязка к пользователю (если купон персональный)
     @ManyToOne
     @JoinColumn(name = "user_id")
     private User user;
@@ -34,5 +38,13 @@ public class Coupon {
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
+    }
+
+    public boolean canBeUsed() {
+        if (!isActive) return false;
+        if (isUsed) return false;
+        if (validUntil != null && LocalDateTime.now().isAfter(validUntil)) return false;
+        if (usageLimit != null && usedCount >= usageLimit) return false;
+        return true;
     }
 }

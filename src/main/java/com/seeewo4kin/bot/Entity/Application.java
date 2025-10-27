@@ -34,6 +34,10 @@ public class Application {
     private double calculatedGiveValue;
     private double calculatedGetValue;
 
+    private Double usedBonusBalance = 0.0;
+    private Double referralRewardLevel1 = 0.0;
+    private Double referralRewardLevel2 = 0.0;
+
     @Enumerated(EnumType.STRING)
     private ApplicationStatus status = ApplicationStatus.FREE;
 

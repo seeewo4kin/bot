@@ -11,12 +11,16 @@ import java.util.Optional;
 
 @Repository
 public interface CouponRepository extends JpaRepository<Coupon, Long> {
-
-    @Query("SELECT c FROM Coupon c WHERE c.code = :code AND c.user.id = :userId AND c.isActive = true AND c.isUsed = false AND (c.validUntil IS NULL OR c.validUntil > CURRENT_TIMESTAMP)")
-    Optional<Coupon> findValidCouponByCodeAndUser(@Param("code") String code, @Param("userId") Long userId);
-
-    List<Coupon> findByUserIdAndIsUsedFalse(Long userId);
-
-    List<Coupon> findByUserIsNullAndIsActiveTrueAndIsUsedFalse(); // Общие купоны
     Optional<Coupon> findByCode(String code);
+
+    @Query("SELECT c FROM Coupon c WHERE c.user.id = :userId AND c.isUsed = false")
+    List<Coupon> findByUserIdAndIsUsedFalse(@Param("userId") Long userId);
+
+    @Query("SELECT c FROM Coupon c WHERE c.user IS NULL AND c.isActive = true AND c.isUsed = false")
+    List<Coupon> findByUserIsNullAndIsActiveTrueAndIsUsedFalse();
+
+    List<Coupon> findByIsActiveTrue();
+
+    @Query("SELECT c FROM Coupon c WHERE c.code = :code AND c.isActive = true AND c.isUsed = false")
+    Optional<Coupon> findValidCouponByCode(@Param("code") String code);
 }

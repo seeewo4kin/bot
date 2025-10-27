@@ -23,8 +23,14 @@ public class User {
     private String firstName;
     private String lastName;
 
-    private Double bonusBalance = 0.0;
+    // Бонусный баланс для использования в заявках
+    private Double bonusBalance = 200.0; // Начальный бонус 200 рублей
 
+    // Реферальный баланс для вывода
+    private Double referralBalance = 0.0;
+
+    // Поле для хранения использованного реферального кода
+    private String usedReferralCode;
 
     @Enumerated(EnumType.STRING)
     private UserState state = UserState.START;
@@ -38,11 +44,18 @@ public class User {
     private Double totalCommissionPaid = 0.0;
 
     // Реферальная система
-    private String usedReferralCode;
-    private Double referralEarnings = 0.0;
-    private Integer referralCount = 0;
+    @ManyToOne
+    @JoinColumn(name = "invited_by_id")
+    private User invitedBy;
 
-    @OneToMany(mappedBy = "owner")
+    private LocalDateTime invitedAt;
+
+    // Исправим отношение на OneToOne
+    @OneToOne(mappedBy = "user", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    private ReferralStats referralStats;
+
+    // Добавим связь с реферальными кодами
+    @OneToMany(mappedBy = "owner", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private List<ReferralCode> referralCodes = new ArrayList<>();
 
     @Column(name = "created_at", updatable = false)
@@ -51,5 +64,22 @@ public class User {
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
+        if (this.referralStats == null) {
+            this.referralStats = new ReferralStats();
+            this.referralStats.setUser(this);
+        }
+    }
+
+    // Геттеры для статистики рефералов
+    public Integer getReferralCount() {
+        return referralStats != null ? referralStats.getLevel1Count() : 0;
+    }
+
+    public Double getReferralEarnings() {
+        return referralStats != null ? referralStats.getTotalEarned() : 0.0;
+    }
+
+    public boolean hasUsedReferralCode() {
+        return usedReferralCode != null && !usedReferralCode.trim().isEmpty();
     }
 }

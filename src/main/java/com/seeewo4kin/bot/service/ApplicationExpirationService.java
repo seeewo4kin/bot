@@ -20,7 +20,7 @@ public class ApplicationExpirationService {
         this.bot = bot;
     }
 
-    @Scheduled(fixedRate = 30000)
+    @Scheduled(fixedRate = 240000)
     @Transactional
     public void closeExpiredApplications() {
         List<Application> activeApplications = applicationService.findActiveApplications();
@@ -39,7 +39,7 @@ public class ApplicationExpirationService {
                 String notificationMessage = String.format("""
                     ⏰ Заявка #%d автоматически отменена
                     
-                    Причина: истекло время ожидания (5 минут)
+                    Причина: истекло время ожидания (40 минут)
                     ID заявки: %s
                     Сумма: %.2f ₽
                     
