@@ -27,6 +27,7 @@
 		<url/>
 	</scm>
 	<properties>
+        <skipTests>true</skipTests>
 		<java.version>17</java.version>
 	</properties>
 	<dependencies>

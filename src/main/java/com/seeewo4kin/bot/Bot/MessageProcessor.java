@@ -13,6 +13,7 @@ import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 
+import java.io.File;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -62,14 +63,6 @@ public class MessageProcessor {
 
     private String formatBtcAmount(double amount) {
         return String.format("%.8f BTC", amount).replace(",", ".");
-    }
-
-    private String formatDouble(double value) {
-        return String.format("%.2f", value).replace(",", ".");
-    }
-
-    private String formatPercent(double value) {
-        return String.format("%.1f%%", value).replace(",", ".");
     }
 
 
@@ -2087,114 +2080,49 @@ public class MessageProcessor {
         }
     }
 
-    public void updateApplicationStatus(Long applicationId, ApplicationStatus newStatus, MyBot bot) {
-        Application application = applicationService.find(applicationId);
-        if (application == null) return;
-
-        application.setStatus(newStatus);
-        applicationService.update(application);
-
-        // Обновляем сообщение у пользователя
-        if (application.getTelegramMessageId() != null) {
-            String updatedMessage = formatApplicationMessage(application);
-            InlineKeyboardMarkup keyboard = createApplicationInlineKeyboard(application.getId());
-
-            try {
-                bot.editMessageText(application.getUser().getTelegramId(),
-                        application.getTelegramMessageId(),
-                        updatedMessage,
-                        keyboard);
-            } catch (Exception e) {
-                System.err.println("Не удалось обновить сообщение заявки: " + e.getMessage());
-            }
-        }
-    }
 
     private void showMainMenu(Long chatId, User user, MyBot bot) {
-        String message = """
-                💼 Добро пожаловать в обменник — 𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐂𝐇𝐀𝐍𝐆𝐄
-                🚀 Быстрый и надёжный обмен RUB → BTC / LTC / XMR\s
-                ⚖️ Честные курсы, без задержек и скрытых комиссий.
-                💸 БОНУС: после каждой операции получаете 3% кешбэк на свой баланс!
-                
-                📲 Как всё работает:\s
-                1️⃣ Нажмите 💵 Купить или 💰 Продать\s
-                2️⃣ Введите нужную сумму 🪙\s
-                3️⃣ Укажите свой кошелёк 🔐
-                4️⃣ Выберите приоритет (🔹обычный / 👑 VIP)\s
-                5️⃣ Подтвердите заявку ✅\s
-                6️⃣ Если готовы оплачивать — перешлите заявку оператору ☎️
-                
-                ⚙️ Дополнительная информация:\s
-                👑 VIP-приоритет — всего 300₽, заявка проходит мгновенно
-                📊 Загруженность сети BTC: низкая 🚥\s
-                🕒 Время подтверждения: 5–20 минут\s
-                💬 Отзывы клиентов: t.me/CosaNostraChange24/4\s
-                🧰 Техподдержка 24/7: @SUP_CN  всегда онлайн, решим любой вопрос 🔧
-                
-                💀Чат: https://t.me/CosaNostraChange24
-                ☎️оператор: @SUP_CN
-                📌Help: @CN_LUCKYY @CN_PAUL
-                🔈SMM: @CN_ACCARDO
-                🔨Вопросы по боту: @@CN_ADONIS
-                
-                COSA NOSTRA CHANGE — тут уважают тех, кто ценит скорость, честность и результат. ⚡️
-                """;
+        File photoFile = new File("/home/manjaro/Загрузки/Telegram Desktop/бот.png");
 
-        // Отправляем только с inline-клавиатурой
+        String caption = """
+            💼 Добро пожаловать в обменник — 𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻️
+            🚀 Быстрый и надёжный обмен RUB → BTC / LTC / XMR 
+            ⚖️ ЛУЧШИЕ курсы, без задержек и скрытых комиссий.
+            💸 БОНУС: после каждой операции получаете 3% кешбэк на свой баланс!
+
+            📲 Как всё работает: 
+            1️⃣ Нажмите 💵 Купить или 💰 Продать 
+            2️⃣ Введите нужную сумму 🪙 
+            3️⃣ Укажите свой кошелёк 🔐
+            4️⃣ Выберите приоритет (🔹обычный / 👑 VIP) 
+            5️⃣ Подтвердите заявку ✅ 
+            6️⃣ Если готовы оплачивать — перешлите заявку оператору ☎️
+
+            ⚙️ Дополнительная информация: 
+            👑 VIP-приоритет — всего 300₽, заявка проходит мгновенно
+            📊 Загруженность сети BTC: низкая 🚥 
+            🕒 Время подтверждения: 5–20 минут 
+
+            💀 Чат: https://t.me/CosaNostraChange24
+            💬 Отзывы клиентов: t.me/CosaNostraChange24/4 
+            🧰 Техподдержка 24/7: @CN_LUCKYY  @CN_PAUL всегда онлайн, решим любой вопрос 🔧
+            ☎️ ОПЕРАТОР: @SUP_CN
+
+            🔴 ОПЕРАТОР НИКОГДА НЕ ПИШЕТ ПЕРВЫМ🔴
+            🔴 ВСЕГДА СВЕРЯЙТЕ КОНТАКТЫ👉 ЮЗЕР = ИМЯ 🔴
+
+
+            𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻️— тут уважают тех, кто ценит скорость, честность и результат. 🤝
+            """;
+
+        // Создаем inline-клавиатуру
         InlineKeyboardMarkup inlineKeyboard = createMainMenuInlineKeyboard(user);
-        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
+
+        // Отправляем фото с текстом и клавиатурой
+        int messageId = bot.sendPhotoWithCaptionAndKeyboard(chatId, photoFile, caption, inlineKeyboard);
         lastMessageId.put(chatId, messageId);
     }
 
-    private void processBuyConfirmation(Long chatId, User user, double rubAmount, double btcAmount,
-                                        String inputType, String outputType, MyBot bot) {
-
-        if (rubAmount < 1000) {
-            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                    "❌ Минимальная сумма заявки 1000 рублей", createEnterAmountInlineKeyboard()));
-            return;
-        }
-
-        double commission = commissionService.calculateCommission(rubAmount);
-        double totalAmount = commissionService.calculateTotalWithCommission(rubAmount);
-
-        Application application = new Application();
-        application.setUser(user);
-        application.setUserValueGetType(ValueType.BTC);
-        application.setUserValueGiveType(ValueType.RUB);
-        application.setUserValueGetValue(btcAmount);
-        application.setUserValueGiveValue(totalAmount);
-        application.setCalculatedGetValue(btcAmount);
-        application.setCalculatedGiveValue(totalAmount);
-        application.setTitle("Покупка BTC за RUB");
-        application.setStatus(ApplicationStatus.FREE);
-
-        temporaryApplications.put(user.getId(), application);
-
-        String calculationMessage = String.format("""
-                        💰 Расчет операции:
-                        
-                        💸 Сумма: %s ₽
-                        💰 Комиссия: %s ₽ (%.1f%%)
-                        💸 Итого к оплате: %s ₽
-                        ₿ Вы получите: %s BTC
-                        
-                        Хотите добавить 👑 VIP-приоритет за 300₽?
-                        Ваша заявка будет обрабатываться в первую очередь!
-                        """,
-                formatRubAmount(rubAmount),
-                formatRubAmount(commission),
-                commissionService.getCommissionPercent(rubAmount),
-                formatRubAmount(totalAmount),
-                formatBtcAmount(btcAmount));
-
-        InlineKeyboardMarkup keyboard = createVipConfirmationInlineKeyboard();
-        lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, calculationMessage, keyboard));
-
-        user.setState(UserState.CONFIRMING_VIP);
-        userService.update(user);
-    }
 
 
     private void processVipConfirmation(Long chatId, User user, String text, MyBot bot) {
@@ -4193,7 +4121,6 @@ public class MessageProcessor {
         String message = String.format("""
                 🎁 Реферальная программа
 
-                📝 Условия: 
 
                 🔗 Ваша реферальная ссылка:
                 📌 %s

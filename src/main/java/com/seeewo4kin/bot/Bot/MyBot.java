@@ -3,8 +3,10 @@ package com.seeewo4kin.bot.Bot;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
+import org.telegram.telegrambots.meta.api.methods.send.SendPhoto;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
+import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.api.objects.Message;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
@@ -12,6 +14,8 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMar
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+
+import java.io.File;
 
 @Component
 public class MyBot extends TelegramLongPollingBot {
@@ -74,6 +78,26 @@ public class MyBot extends TelegramLongPollingBot {
         try {
             Message sentMessage = execute(message);
             return sentMessage.getMessageId();
+        } catch (TelegramApiException e) {
+            e.printStackTrace();
+            return -1;
+        }
+    }
+
+    public int sendPhotoWithCaptionAndKeyboard(Long chatId, File photoFile, String caption, InlineKeyboardMarkup keyboard) {
+        try {
+            SendPhoto sendPhoto = new SendPhoto();
+            sendPhoto.setChatId(chatId.toString());
+            sendPhoto.setPhoto(new InputFile(photoFile));
+            sendPhoto.setCaption(caption);
+            sendPhoto.setParseMode("HTML");
+
+            if (keyboard != null) {
+                sendPhoto.setReplyMarkup(keyboard);
+            }
+
+            Message message = execute(sendPhoto);
+            return message.getMessageId();
         } catch (TelegramApiException e) {
             e.printStackTrace();
             return -1;
