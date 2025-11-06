@@ -3,10 +3,9 @@ package com.seeewo4kin.bot.Enums;
 public enum ApplicationStatus {
     FREE("🟢 Свободна"),
     IN_WORK("🟡 В работе"),
-    COMPLETED("✅ Выполнена"),
-    PAYED("Оплачено"),
+    PAID("🔵 Оплачен"), // ДОБАВЛЕНО
+    COMPLETED("✅ Выполнено"),
     CANCELLED("🔴 Отменена");
-
 
     private final String displayName;
 

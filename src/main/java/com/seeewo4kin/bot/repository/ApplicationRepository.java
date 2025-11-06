@@ -22,5 +22,6 @@ public interface ApplicationRepository extends JpaRepository<Application, Long> 
     // Новый метод для поиска по UUID (если понадобится)
     Application findByUuid(String uuid);
     List<Application> findByCreatedAtBetween(LocalDateTime startDate, LocalDateTime endDate);
-
+    @Query("SELECT a FROM Application a WHERE a.adminId = :adminId ORDER BY a.createdAt DESC")
+    List<Application> findByAdminId(@Param("adminId") Long adminId);
 }

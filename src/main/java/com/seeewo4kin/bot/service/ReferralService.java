@@ -148,7 +148,7 @@ public class ReferralService {
     }
 
     public String generateReferralLink(User user) {
-        return "https://t.me/cosanostra_change_bot?start=ref_" + user.getTelegramId();
+        return "https://t.me/COSANOSTRA24_bot?start=ref_" + user.getTelegramId();
     }
 
     public ReferralStats getReferralStats(User user) {

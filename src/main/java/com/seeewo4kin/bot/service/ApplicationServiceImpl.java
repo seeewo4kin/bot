@@ -96,4 +96,10 @@ public class ApplicationServiceImpl implements ApplicationService {
 
         return findApplicationsByDateRange(startDate, now);
     }
+    public List<Application> findByAdminId(Long adminId) {
+        // Реализуйте этот метод в вашем ApplicationService
+        // Он должен возвращать все заявки, где admin_id = adminId
+        return applicationRepository.findByAdminId(adminId);
+    }
+
 }

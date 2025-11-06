@@ -6,6 +6,8 @@ import com.seeewo4kin.bot.repository.UserRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
+
 @Service
 @Transactional
 public class UserServiceImpl implements UserService {
@@ -75,5 +77,9 @@ public class UserServiceImpl implements UserService {
             username = username.substring(1);
         }
         return userRepository.findByUsername(username).orElse(null);
+    }
+    public List<User> findAllActiveUsers() {
+        // Возвращаем всех пользователей, которые прошли капчу (не в состоянии START)
+        return userRepository.findByStateNot(UserState.START);
     }
 }

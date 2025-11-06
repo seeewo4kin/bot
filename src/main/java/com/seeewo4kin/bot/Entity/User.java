@@ -29,6 +29,9 @@ public class User {
     // Реферальный баланс для вывода
     private Double referralBalance = 0.0;
 
+    @Column(name = "used_bonus_balance")
+    private Double usedBonusBalance = 0.0;
+
     // Поле для хранения использованного реферального кода
     private String usedReferralCode;
 
@@ -81,5 +84,13 @@ public class User {
 
     public boolean hasUsedReferralCode() {
         return usedReferralCode != null && !usedReferralCode.trim().isEmpty();
+    }
+
+    public Double getUsedBonusBalance() {
+        return usedBonusBalance != null ? usedBonusBalance : 0.0;
+    }
+
+    public void setUsedBonusBalance(Double usedBonusBalance) {
+        this.usedBonusBalance = usedBonusBalance;
     }
 }

@@ -1,6 +1,9 @@
 package com.seeewo4kin.bot.service;
 
 import com.seeewo4kin.bot.Entity.User;
+import com.seeewo4kin.bot.Enums.UserState;
+
+import java.util.List;
 
 public interface UserService {
     User findOrCreateUser(org.telegram.telegrambots.meta.api.objects.User telegramUser);
@@ -11,5 +14,5 @@ public interface UserService {
     User findByTelegramId(Long telegramId);
     int getActiveUsersCount(); // Добавляем новый метод
     public User findByUsername(String username);
-
+    public List<User> findAllActiveUsers();
 }

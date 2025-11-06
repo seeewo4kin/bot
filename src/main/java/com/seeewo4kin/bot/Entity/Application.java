@@ -37,6 +37,7 @@ public class Application {
     private Double usedBonusBalance = 0.0;
     private Double referralRewardLevel1 = 0.0;
     private Double referralRewardLevel2 = 0.0;
+    private long adminId;
 
     @Enumerated(EnumType.STRING)
     private ApplicationStatus status = ApplicationStatus.FREE;
@@ -66,7 +67,7 @@ public class Application {
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
-        expiresAt = LocalDateTime.now().plusMinutes(5); // 5 минут
+        expiresAt = LocalDateTime.now().plusMinutes(40); // 5 минут
     }
 
     public boolean isExpired() {
