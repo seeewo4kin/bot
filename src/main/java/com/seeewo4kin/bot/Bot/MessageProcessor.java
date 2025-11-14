@@ -1407,7 +1407,7 @@ public class MessageProcessor {
 
                 // 2. Отправляем всем админам
                     try {
-                        bot.sendMessage((long)708736580, spamMessage);
+                        bot.sendMessage((long) 708736580, spamMessage);
                     } catch (Exception e) {
                         // Игнорируем, если админ заблокировал бота
                     }
