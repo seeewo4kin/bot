@@ -1,25 +1,47 @@
+version: '3.8'
+
 services:
-  app:
-    build: .
-    ports:
-      - "8075:8075"
+  # 1. Сервис Базы Данных (PostgreSQL)
+  db:
+    image: postgres:15 # Рекомендую указать версию, а не latest
+    container_name: bot-postgres-db
     environment:
-      - SPRING_PROFILES_ACTIVE=docker
-    depends_on:
-      - postgres
-    restart: unless-stopped
-
-  postgres:
-    image: postgres:13-alpine
-    environment:
-      POSTGRES_DB: pgdb
-      POSTGRES_USER: seeewo4kin
-      POSTGRES_PASSWORD: Xyivrot123
-    ports:
-      - "5432:5432"
+      # Эти переменные Docker использует для создания БД
+      # Они ДОЛЖНЫ совпадать с тем, что будет в .env файле
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data # Сохраняет данные БД даже после удаления контейнера
     restart: unless-stopped
 
+  # 2. Сервис Вашего Бота (Java)
+  app:
+    container_name: telegram-bot-app
+    # Говорим Compose "собери этот контейнер из Dockerfile в этой же папке"
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8075:8075" # Пробрасываем порт 8075 из контейнера наружу
+    depends_on:
+      - db # Говорим, что бот должен стартовать ТОЛЬКО ПОСЛЕ старта БД
+    environment:
+      # --- Вот здесь мы передаем переменные в Spring Boot ---
+
+      # Ссылка на БД. "db" - это имя сервиса, которое мы задали выше.
+      # Docker Compose сам превратит "db" в правильный IP-адрес.
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://db:5432/${POSTGRES_DB}
+
+      # Передаем логин/пароль к БД
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD}
+
+      # Передаем секреты бота
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_BOT_USERNAME=${TELEGRAM_BOT_USERNAME}
+      - BOT_ADMINS=${BOT_ADMINS}
+      - BOT_HEARTBEAT_CHATID=${BOT_HEARTBEAT_CHATID}
+
+# Говорим Docker создать именованный том для данных БД
 volumes:
-  postgres_data:
+  pgdata:

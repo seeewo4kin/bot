@@ -6,6 +6,7 @@ import org.springframework.web.client.RestTemplate;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -19,8 +20,8 @@ public class CryptoPriceService {
     private final ObjectMapper objectMapper;
 
     // Кэш для хранения цен
-    private final Map<String, Double> priceCache = new ConcurrentHashMap<>();
-    private final Map<String, Map<String, Double>> multiplePriceCache = new ConcurrentHashMap<>();
+    private final Map<String, BigDecimal> priceCache = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, BigDecimal>> multiplePriceCache = new ConcurrentHashMap<>();
 
     // Executor для асинхронных задач
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(3);
@@ -35,14 +36,14 @@ public class CryptoPriceService {
     );
 
     // Fallback rates
-    private static final Map<String, Map<String, Double>> FALLBACK_RATES = Map.of(
-            "BTC", Map.of("USD", 45000.0, "RUB", 4000000.0, "EUR", 41000.0),
-            "ETH", Map.of("USD", 3000.0, "RUB", 270000.0, "EUR", 2700.0),
-            "XMR", Map.of("USD", 150.0, "RUB", 13500.0, "EUR", 140.0),
-            "LTC", Map.of("USD", 75.0, "RUB", 6800.0, "EUR", 70.0),
-            "USDT", Map.of("USD", 1.0, "RUB", 92.0, "EUR", 0.92),
-            "USDC", Map.of("USD", 1.0, "RUB", 92.0, "EUR", 0.92),
-            "COUPONS", Map.of("USD", 1.0, "RUB", 92.0, "EUR", 0.92)
+    private static final Map<String, Map<String, BigDecimal>> FALLBACK_RATES = Map.of(
+            "BTC", Map.of("USD",  BigDecimal.valueOf(45000.0), "RUB", BigDecimal.valueOf(4000000.0), "EUR", BigDecimal.valueOf(41000.0)),
+            "ETH", Map.of("USD", BigDecimal.valueOf(3000.0), "RUB", BigDecimal.valueOf(270000.0), "EUR", BigDecimal.valueOf(2700.0)),
+            "XMR", Map.of("USD", BigDecimal.valueOf(150.0), "RUB", BigDecimal.valueOf(13500.0), "EUR", BigDecimal.valueOf(140.0)),
+            "LTC", Map.of("USD", BigDecimal.valueOf(75.0), "RUB", BigDecimal.valueOf(6800.0), "EUR", BigDecimal.valueOf(70.0)),
+            "USDT", Map.of("USD", BigDecimal.valueOf(1.0), "RUB", BigDecimal.valueOf(92.0), "EUR", BigDecimal.valueOf(0.92)),
+            "USDC", Map.of("USD", BigDecimal.valueOf(1.0), "RUB", BigDecimal.valueOf(92.0), "EUR", BigDecimal.valueOf(0.92)),
+            "COUPONS", Map.of("USD", BigDecimal.valueOf(1.0), "RUB", BigDecimal.valueOf(92.0), "EUR", BigDecimal.valueOf(0.92))
     );
 
     public CryptoPriceService() {
@@ -81,8 +82,8 @@ public class CryptoPriceService {
             try {
                 if ("USDT".equals(crypto) || "USDC".equals(crypto)) {
                     // Для стейблкоинов используем фиксированные значения
-                    Map<String, Double> prices = new HashMap<>();
-                    prices.put("USD", 1.0);
+                    Map<String, BigDecimal> prices = new HashMap<>();
+                    prices.put("USD", BigDecimal.ONE);
                     // RUB и EUR будут обновлены в updateFiatRates()
                     multiplePriceCache.put(crypto, prices);
                     return;
@@ -95,20 +96,20 @@ public class CryptoPriceService {
                 }
 
                 // Получаем цену с Binance
-                Double usdPrice = getPriceFromBinance(symbol);
-                if (usdPrice != null && usdPrice > 0) {
-                    Map<String, Double> prices = new HashMap<>();
+                BigDecimal usdPrice = getPriceFromBinance(symbol);
+                if (usdPrice != null && usdPrice.compareTo(BigDecimal.ZERO) == 1) {
+                    Map<String, BigDecimal> prices = new HashMap<>();
                     prices.put("USD", usdPrice);
 
                     // Получаем текущие курсы RUB и EUR
-                    Double usdToRub = priceCache.get("USD_RUB");
-                    Double usdToEur = priceCache.get("USD_EUR");
+                    BigDecimal usdToRub = priceCache.get("USD_RUB");
+                    BigDecimal usdToEur = priceCache.get("USD_EUR");
 
                     if (usdToRub != null) {
-                        prices.put("RUB", usdPrice * usdToRub);
+                        prices.put("RUB", usdPrice.multiply(usdToRub));
                     }
                     if (usdToEur != null) {
-                        prices.put("EUR", usdPrice * usdToEur);
+                        prices.put("EUR", usdPrice.multiply(usdToEur));
                     }
 
                     multiplePriceCache.put(crypto, prices);
@@ -116,10 +117,10 @@ public class CryptoPriceService {
                     // Также обновляем отдельные цены в основном кэше
                     priceCache.put(crypto + "_USD", usdPrice);
                     if (usdToRub != null) {
-                        priceCache.put(crypto + "_RUB", usdPrice * usdToRub);
+                        priceCache.put(crypto + "_RUB", usdPrice.multiply(usdToRub));
                     }
                     if (usdToEur != null) {
-                        priceCache.put(crypto + "_EUR", usdPrice * usdToEur);
+                        priceCache.put(crypto + "_EUR", usdPrice.multiply(usdToEur));
                     }
                 }
             } catch (Exception e) {
@@ -131,7 +132,7 @@ public class CryptoPriceService {
     /**
      * Получение цены с Binance API
      */
-    private Double getPriceFromBinance(String symbol) {
+    private BigDecimal getPriceFromBinance(String symbol) {
         try {
             String url = "https://api.binance.com/api/v3/ticker/price?symbol=" + symbol;
 
@@ -139,7 +140,7 @@ public class CryptoPriceService {
             String response = restTemplate.getForObject(url, String.class);
             JsonNode root = objectMapper.readTree(response);
 
-            return root.path("price").asDouble();
+            return BigDecimal.valueOf(root.path("price").asDouble());
         } catch (Exception e) {
             System.err.println("Error fetching price from Binance for " + symbol + ": " + e.getMessage());
             return getFallbackPrice(symbol.replace("USDT", ""), "USD");
@@ -160,8 +161,8 @@ public class CryptoPriceService {
             } catch (Exception e) {
                 System.err.println("Error updating fiat rates: " + e.getMessage());
                 // Используем fallback значения
-                priceCache.put("USD_RUB", 92.0);
-                priceCache.put("USD_EUR", 0.92);
+                priceCache.put("USD_RUB", BigDecimal.valueOf(92.0));
+                priceCache.put("USD_EUR", BigDecimal.valueOf(0.92));
             }
         });
     }
@@ -176,8 +177,8 @@ public class CryptoPriceService {
             String response = restTemplate.getForObject(url, String.class);
             JsonNode root = objectMapper.readTree(response);
 
-            Double usdRate = root.path("Valute").path("USD").path("Value").asDouble();
-            if (usdRate != null && usdRate > 0) {
+            BigDecimal usdRate = BigDecimal.valueOf(root.path("Valute").path("USD").path("Value").asDouble());
+            if (usdRate != null && usdRate.compareTo(BigDecimal.ZERO) == 1) {
                 priceCache.put("USD_RUB", usdRate);
 
                 // Обновляем все цены в RUB
@@ -185,7 +186,7 @@ public class CryptoPriceService {
             }
         } catch (Exception e) {
             // Fallback значение
-            priceCache.put("USD_RUB", 92.0);
+            priceCache.put("USD_RUB", BigDecimal.valueOf(92.0));
             System.err.println("Error updating USD/RUB rate: " + e.getMessage());
         }
     }
@@ -200,8 +201,8 @@ public class CryptoPriceService {
             String response = restTemplate.getForObject(url, String.class);
             JsonNode root = objectMapper.readTree(response);
 
-            Double eurRate = root.path("rates").path("EUR").asDouble();
-            if (eurRate != null && eurRate > 0) {
+            BigDecimal eurRate = BigDecimal.valueOf(root.path("rates").path("EUR").asDouble());
+            if (eurRate != null && eurRate.compareTo(BigDecimal.ZERO) == 1) {
                 priceCache.put("USD_EUR", eurRate);
 
                 // Обновляем все цены в EUR
@@ -209,7 +210,7 @@ public class CryptoPriceService {
             }
         } catch (Exception e) {
             // Fallback значение
-            priceCache.put("USD_EUR", 0.92);
+            priceCache.put("USD_EUR", BigDecimal.valueOf(0.92));
             System.err.println("Error updating USD/EUR rate: " + e.getMessage());
         }
     }
@@ -217,13 +218,13 @@ public class CryptoPriceService {
     /**
      * Обновление всех цен в RUB при изменении курса
      */
-    private void updateAllPricesInRub(Double usdToRubRate) {
+    private void updateAllPricesInRub(BigDecimal usdToRubRate) {
         for (String crypto : multiplePriceCache.keySet()) {
-            Map<String, Double> prices = multiplePriceCache.get(crypto);
-            Double usdPrice = prices.get("USD");
+            Map<String, BigDecimal> prices = multiplePriceCache.get(crypto);
+            BigDecimal usdPrice = prices.get("USD");
             if (usdPrice != null) {
-                prices.put("RUB", usdPrice * usdToRubRate);
-                priceCache.put(crypto + "_RUB", usdPrice * usdToRubRate);
+                prices.put("RUB", usdPrice.multiply(usdToRubRate));
+                priceCache.put(crypto + "_RUB", usdPrice.multiply(usdToRubRate));
             }
         }
     }
@@ -231,13 +232,13 @@ public class CryptoPriceService {
     /**
      * Обновление всех цен в EUR при изменении курса
      */
-    private void updateAllPricesInEur(Double usdToEurRate) {
+    private void updateAllPricesInEur(BigDecimal usdToEurRate) {
         for (String crypto : multiplePriceCache.keySet()) {
-            Map<String, Double> prices = multiplePriceCache.get(crypto);
-            Double usdPrice = prices.get("USD");
+            Map<String, BigDecimal> prices = multiplePriceCache.get(crypto);
+            BigDecimal usdPrice = prices.get("USD");
             if (usdPrice != null) {
-                prices.put("EUR", usdPrice * usdToEurRate);
-                priceCache.put(crypto + "_EUR", usdPrice * usdToEurRate);
+                prices.put("EUR", usdPrice.multiply(usdToEurRate));
+                priceCache.put(crypto + "_EUR", usdPrice.multiply(usdToEurRate));
             }
         }
     }
@@ -245,11 +246,11 @@ public class CryptoPriceService {
     /**
      * Получение текущей цены с обработкой ошибок и fallback'ом
      */
-    public Double getCurrentPrice(String cryptoCurrency, String fiatCurrency) {
+    public BigDecimal getCurrentPrice(String cryptoCurrency, String fiatCurrency) {
         String cacheKey = cryptoCurrency + "_" + fiatCurrency;
 
         // Пробуем получить из кэша
-        Double price = priceCache.get(cacheKey);
+        BigDecimal price = priceCache.get(cacheKey);
         if (price != null) {
             return price;
         }
@@ -261,8 +262,8 @@ public class CryptoPriceService {
     /**
      * Получение цен для нескольких валют сразу
      */
-    public Map<String, Double> getMultiplePrices(String cryptoCurrency) {
-        Map<String, Double> prices = multiplePriceCache.get(cryptoCurrency);
+    public Map<String, BigDecimal> getMultiplePrices(String cryptoCurrency) {
+        Map<String, BigDecimal> prices = multiplePriceCache.get(cryptoCurrency);
         if (prices != null && !prices.isEmpty()) {
             return new HashMap<>(prices); // Возвращаем копию для безопасности
         }
@@ -274,17 +275,17 @@ public class CryptoPriceService {
     /**
      * Fallback цены
      */
-    private Double getFallbackPrice(String crypto, String fiat) {
-        Map<String, Double> cryptoRates = FALLBACK_RATES.get(crypto.toUpperCase());
+    private BigDecimal getFallbackPrice(String crypto, String fiat) {
+        Map<String, BigDecimal> cryptoRates = FALLBACK_RATES.get(crypto.toUpperCase());
         if (cryptoRates != null) {
-            return cryptoRates.getOrDefault(fiat.toUpperCase(), 1.0);
+            return cryptoRates.getOrDefault(fiat.toUpperCase(), BigDecimal.ONE);
         }
-        return 1.0;
+        return BigDecimal.ONE;
     }
 
-    private Map<String, Double> getFallbackMultiplePrices(String crypto) {
+    private Map<String, BigDecimal> getFallbackMultiplePrices(String crypto) {
         return FALLBACK_RATES.getOrDefault(crypto.toUpperCase(),
-                Map.of("USD", 1.0, "RUB", 92.0, "EUR", 0.92));
+                Map.of("USD", BigDecimal.valueOf(1.0), "RUB", BigDecimal.valueOf(92.0), "EUR", BigDecimal.valueOf(0.92)));
     }
 
     /**

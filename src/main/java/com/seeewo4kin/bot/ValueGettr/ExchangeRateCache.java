@@ -3,6 +3,8 @@ package com.seeewo4kin.bot.ValueGettr;
 import com.seeewo4kin.bot.Enums.ValueType;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.math.MathContext;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -11,7 +13,7 @@ import java.util.concurrent.TimeUnit;
 
 @Service
 public class ExchangeRateCache {
-    private final Map<String, Double> rateCache = new ConcurrentHashMap<>();
+    private final Map<String, BigDecimal> rateCache = new ConcurrentHashMap<>();
     private final Map<String, Long> cacheTimestamps = new ConcurrentHashMap<>();
     private static final long CACHE_TTL_MS = 300000; // 5 минут
 
@@ -24,7 +26,7 @@ public class ExchangeRateCache {
         scheduler.scheduleAtFixedRate(this::cleanupExpiredCache, 60, 60, TimeUnit.SECONDS);
     }
 
-    public Double getCachedRate(String fromCurrency, String toCurrency) {
+    public BigDecimal getCachedRate(String fromCurrency, String toCurrency) {
         String cacheKey = fromCurrency + "_" + toCurrency;
         Long timestamp = cacheTimestamps.get(cacheKey);
 
@@ -34,28 +36,28 @@ public class ExchangeRateCache {
         return null;
     }
 
-    public void putRate(String fromCurrency, String toCurrency, Double rate) {
+    public void putRate(String fromCurrency, String toCurrency, BigDecimal rate) {
         String cacheKey = fromCurrency + "_" + toCurrency;
-        if (rate != null && rate > 0) {
+        if (rate != null && rate.compareTo(BigDecimal.ZERO) > 0) {
             rateCache.put(cacheKey, rate);
             cacheTimestamps.put(cacheKey, System.currentTimeMillis());
         }
     }
 
-    public Double getExchangeRate(ValueType fromCurrency, ValueType toCurrency) {
+    public BigDecimal getExchangeRate(ValueType fromCurrency, ValueType toCurrency) {
         if (fromCurrency == toCurrency) {
-            return 1.0;
+            return BigDecimal.ZERO;
         }
 
         // Проверяем кэш
-        Double cachedRate = getCachedRate(fromCurrency.name(), toCurrency.name());
+        BigDecimal cachedRate = getCachedRate(fromCurrency.name(), toCurrency.name());
         if (cachedRate != null) {
             return cachedRate;
         }
 
         // Если в кэше нет, вычисляем курс через USD
-        Double rate = calculateExchangeRateViaUSD(fromCurrency, toCurrency);
-        if (rate != null && rate > 0) {
+        BigDecimal rate = calculateExchangeRateViaUSD(fromCurrency, toCurrency);
+        if (rate != null && rate.compareTo(BigDecimal.ZERO) == 1) {
             putRate(fromCurrency.name(), toCurrency.name(), rate);
             return rate;
         }
@@ -64,14 +66,14 @@ public class ExchangeRateCache {
         return calculateDirectExchangeRate(fromCurrency, toCurrency);
     }
 
-    private Double calculateExchangeRateViaUSD(ValueType fromCurrency, ValueType toCurrency) {
+    private BigDecimal calculateExchangeRateViaUSD(ValueType fromCurrency, ValueType toCurrency) {
         try {
             // Получаем цены в USD
-            Double fromUsdPrice = cryptoPriceService.getCurrentPrice(fromCurrency.name(), "USD");
-            Double toUsdPrice = cryptoPriceService.getCurrentPrice(toCurrency.name(), "USD");
+            BigDecimal fromUsdPrice = cryptoPriceService.getCurrentPrice(fromCurrency.name(), "USD");
+            BigDecimal toUsdPrice = cryptoPriceService.getCurrentPrice(toCurrency.name(), "USD");
 
-            if (fromUsdPrice != null && toUsdPrice != null && toUsdPrice != 0) {
-                return fromUsdPrice / toUsdPrice;
+            if (fromUsdPrice != null && toUsdPrice != null && toUsdPrice.compareTo(BigDecimal.ZERO) != 0) {
+                return fromUsdPrice.divide(toUsdPrice, MathContext.DECIMAL64);
             }
         } catch (Exception e) {
             System.err.println("Error calculating exchange rate via USD: " + e.getMessage());
@@ -79,20 +81,20 @@ public class ExchangeRateCache {
         return null;
     }
 
-    private Double calculateDirectExchangeRate(ValueType fromCurrency, ValueType toCurrency) {
+    private BigDecimal calculateDirectExchangeRate(ValueType fromCurrency, ValueType toCurrency) {
         try {
             // Пробуем получить прямую цену
-            Map<String, Double> fromPrices = cryptoPriceService.getMultiplePrices(fromCurrency.name());
-            Map<String, Double> toPrices = cryptoPriceService.getMultiplePrices(toCurrency.name());
+            Map<String, BigDecimal> fromPrices = cryptoPriceService.getMultiplePrices(fromCurrency.name());
+            Map<String, BigDecimal> toPrices = cryptoPriceService.getMultiplePrices(toCurrency.name());
 
             // Пробуем разные валюты для расчета
             String[] fiats = {"USD", "RUB", "EUR"};
             for (String fiat : fiats) {
-                Double fromPrice = fromPrices.get(fiat);
-                Double toPrice = toPrices.get(fiat);
+                BigDecimal fromPrice = fromPrices.get(fiat);
+                BigDecimal toPrice = toPrices.get(fiat);
 
-                if (fromPrice != null && toPrice != null && toPrice != 0) {
-                    return fromPrice / toPrice;
+                if (fromPrice != null && toPrice != null && toPrice.compareTo(BigDecimal.ZERO) != 0) {
+                    return fromPrice.divide(toPrice, MathContext.DECIMAL64);
                 }
             }
         } catch (Exception e) {
@@ -103,22 +105,22 @@ public class ExchangeRateCache {
         return getFallbackRate(fromCurrency, toCurrency);
     }
 
-    private Double getFallbackRate(ValueType fromCurrency, ValueType toCurrency) {
+    private BigDecimal getFallbackRate(ValueType fromCurrency, ValueType toCurrency) {
         // Упрощенные курсы для fallback через USD
-        Map<ValueType, Double> usdRates = Map.of(
-                ValueType.BTC, 45000.0,
-                ValueType.RUB, 0.0109,
-                ValueType.COUPONS, 1.0
+        Map<ValueType, BigDecimal> usdRates = Map.of(
+                ValueType.BTC, BigDecimal.valueOf(45000.00),
+                ValueType.RUB, BigDecimal.valueOf(0.0109),
+                ValueType.COUPONS, BigDecimal.ONE
         );
 
-        Double fromUsd = usdRates.get(fromCurrency);
-        Double toUsd = usdRates.get(toCurrency);
+        BigDecimal fromUsd = usdRates.get(fromCurrency);
+        BigDecimal toUsd = usdRates.get(toCurrency);
 
-        if (fromUsd != null && toUsd != null && toUsd != 0) {
-            return fromUsd / toUsd;
+        if (fromUsd != null && toUsd != null && toUsd.compareTo(BigDecimal.ZERO) != 0) {
+            return fromUsd.divide(toUsd, MathContext.DECIMAL64);
         }
 
-        return 1.0;
+        return BigDecimal.ONE;
     }
 
     private void cleanupExpiredCache() {

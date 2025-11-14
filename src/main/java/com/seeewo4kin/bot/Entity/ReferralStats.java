@@ -2,6 +2,8 @@ package com.seeewo4kin.bot.Entity;
 
 import jakarta.persistence.*;
 import lombok.Data;
+
+import java.math.BigDecimal; // ИЗМЕНЕНО
 import java.time.LocalDateTime;
 
 @Entity
@@ -23,14 +25,21 @@ public class ReferralStats {
     private Integer activeLast30DaysL1 = 0;
     private Integer activeLast30DaysL2 = 0;
 
-    private Double totalExchangeAmount = 0.0;
+    // ИЗМЕНЕНО: double на BigDecimal
+    @Column(precision = 19, scale = 8)
+    private BigDecimal totalExchangeAmount = BigDecimal.ZERO;
     private Integer totalExchangeCount = 0;
 
-    private Double monthlyExchangeAmount = 0.0;
+    // ИЗМЕНЕНО: double на BigDecimal
+    @Column(precision = 19, scale = 8)
+    private BigDecimal monthlyExchangeAmount = BigDecimal.ZERO;
     private Integer monthlyExchangeCount = 0;
 
-    private Double totalEarned = 0.0;
-    private Double referralBalance = 0.0;
+    private BigDecimal totalEarned = BigDecimal.ZERO;
+
+    // ИЗМЕНЕНО: double на BigDecimal
+    @Column(precision = 19, scale = 8)
+    private BigDecimal referralBalance = BigDecimal.ZERO;
 
     private LocalDateTime statsUpdatedAt;
 

@@ -2,6 +2,8 @@ package com.seeewo4kin.bot.Entity;
 
 import jakarta.persistence.*;
 import lombok.Data;
+
+import java.math.BigDecimal; // ИЗМЕНЕНО
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -31,7 +33,9 @@ public class ReferralCode {
     @OneToMany(mappedBy = "referralCode", cascade = CascadeType.ALL)
     private List<ReferralUsage> usages = new ArrayList<>();
 
-    private Double rewardPercent; // Процент от заявок реферала
+    // ИЗМЕНЕНО: double на BigDecimal
+    @Column(precision = 5, scale = 2)
+    private BigDecimal rewardPercent; // Процент от заявок реферала
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

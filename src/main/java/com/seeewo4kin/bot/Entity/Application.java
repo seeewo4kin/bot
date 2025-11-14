@@ -4,6 +4,8 @@ import com.seeewo4kin.bot.Enums.ApplicationStatus;
 import com.seeewo4kin.bot.Enums.ValueType;
 import jakarta.persistence.*;
 import lombok.Data;
+
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.UUID;
@@ -28,15 +30,23 @@ public class Application {
     @Enumerated(EnumType.STRING)
     private ValueType userValueGiveType;
 
-    private double userValueGetValue;
-    private double userValueGiveValue;
+    @Column(name = "user_value_get_value", precision = 19, scale = 8)
+    private BigDecimal userValueGetValue;
+    @Column(name = "user_value_give_value", precision = 19, scale = 8)
+    private BigDecimal userValueGiveValue;
 
-    private double calculatedGiveValue;
-    private double calculatedGetValue;
+    @Column(name = "calculated_give_value", precision = 19, scale = 8)
+    private BigDecimal calculatedGiveValue;
+    @Column(name = "calculated_get_value", precision = 19, scale = 8)
+    private BigDecimal calculatedGetValue;
 
-    private Double usedBonusBalance = 0.0;
-    private Double referralRewardLevel1 = 0.0;
-    private Double referralRewardLevel2 = 0.0;
+    @Column(name = "commission_amount", precision = 19, scale = 8)
+    private BigDecimal commissionAmount;
+
+    @Column(name = "used_bonus_balance", precision = 19, scale = 8)
+    private BigDecimal usedBonusBalance = BigDecimal.ZERO;
+    private BigDecimal referralRewardLevel1 = BigDecimal.ZERO;
+    private BigDecimal referralRewardLevel2 = BigDecimal.ZERO;
     private long adminId;
 
     @Enumerated(EnumType.STRING)
@@ -46,7 +56,8 @@ public class Application {
     @JoinColumn(name = "coupon_id")
     private Coupon appliedCoupon;
 
-    private Double finalAmountAfterDiscount;
+    @Column(name = "final_amount_after_discount", precision = 19, scale = 8)
+    private BigDecimal finalAmountAfterDiscount;
 
     private Boolean isVip = false;
     private String walletAddress;

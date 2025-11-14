@@ -2,6 +2,8 @@ package com.seeewo4kin.bot.Entity;
 
 import jakarta.persistence.*;
 import lombok.Data;
+
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Entity
@@ -16,8 +18,10 @@ public class Coupon {
     private String code;
 
     private String description;
-    private Double discountPercent;
-    private Double discountAmount;
+    @Column(name = "discount_percent", precision = 5, scale = 2)
+    private BigDecimal discountPercent;
+    @Column(name = "discount_amount", precision = 19, scale = 8)
+    private BigDecimal discountAmount;
     private Boolean isActive = true;
     private LocalDateTime validUntil;
 

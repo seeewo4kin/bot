@@ -6,6 +6,8 @@ import com.seeewo4kin.bot.repository.CouponRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
 import java.util.Optional;
 
@@ -47,24 +49,22 @@ public class CouponService {
         return couponRepository.findByIsActiveTrue();
     }
 
-    public double applyCoupon(double originalAmount, Coupon coupon) {
-        double discountedAmount = originalAmount;
+    public BigDecimal applyCoupon(BigDecimal amount, Coupon coupon) {
+        if (amount == null || coupon == null) {
+            return amount != null ? amount : BigDecimal.ZERO;
+        }
 
         if (coupon.getDiscountPercent() != null) {
-            discountedAmount = originalAmount * (1 - coupon.getDiscountPercent() / 100);
+            BigDecimal discount = amount.multiply(coupon.getDiscountPercent())
+                    .divide(BigDecimal.valueOf(100), 8, RoundingMode.HALF_UP);
+            return amount.subtract(discount).max(BigDecimal.ZERO);
         } else if (coupon.getDiscountAmount() != null) {
-            discountedAmount = Math.max(0, originalAmount - coupon.getDiscountAmount());
+            return amount.subtract(coupon.getDiscountAmount()).max(BigDecimal.ZERO);
         }
 
-        // Увеличиваем счетчик использований
-        coupon.setUsedCount(coupon.getUsedCount() + 1);
-        if (coupon.getUsageLimit() != null && coupon.getUsedCount() >= coupon.getUsageLimit()) {
-            coupon.setIsUsed(true);
-        }
-        couponRepository.save(coupon);
-
-        return discountedAmount;
+        return amount;
     }
+
 
     public void createCoupon(Coupon coupon) {
         couponRepository.save(coupon);

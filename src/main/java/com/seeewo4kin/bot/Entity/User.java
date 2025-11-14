@@ -4,6 +4,7 @@ import com.seeewo4kin.bot.Enums.UserState;
 import jakarta.persistence.*;
 import lombok.Data;
 
+import java.math.BigDecimal; // ИЗМЕНЕНО
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -23,14 +24,14 @@ public class User {
     private String firstName;
     private String lastName;
 
-    // Бонусный баланс для использования в заявках
-    private Double bonusBalance = 200.0; // Начальный бонус 200 рублей
-
+    @Column(name = "bonus_balance", precision = 19, scale = 8)
+    private BigDecimal bonusBalance = BigDecimal.valueOf(200);
     // Реферальный баланс для вывода
-    private Double referralBalance = 0.0;
+    @Column(name = "referral_balance", precision = 19, scale = 8)
+    private BigDecimal referralBalance = BigDecimal.ZERO;
 
     @Column(name = "used_bonus_balance")
-    private Double usedBonusBalance = 0.0;
+    private BigDecimal usedBonusBalance = BigDecimal.ZERO;
 
     // Поле для хранения использованного реферального кода
     private String usedReferralCode;
@@ -42,9 +43,16 @@ public class User {
     private Integer completedBuyApplications = 0;
     private Integer completedSellApplications = 0;
     private Integer totalApplications = 0;
-    private Double totalBuyAmount = 0.0;
-    private Double totalSellAmount = 0.0;
-    private Double totalCommissionPaid = 0.0;
+    @Column(name = "total_buy_amount", precision = 19, scale = 8)
+    private BigDecimal totalBuyAmount = BigDecimal.ZERO;
+    @Column(name = "total_sell_amount", precision = 19, scale = 8)
+    private BigDecimal totalSellAmount = BigDecimal.ZERO;
+    @Column(name = "referral_earnings", precision = 19, scale = 8)
+    private BigDecimal referralEarnings = BigDecimal.ZERO;
+
+    // ИЗМЕНЕНО: double на BigDecimal
+    @Column(precision = 19, scale = 8)
+    private BigDecimal totalCommissionPaid = BigDecimal.ZERO;
 
     // Реферальная система
     @ManyToOne
@@ -78,19 +86,16 @@ public class User {
         return referralStats != null ? referralStats.getLevel1Count() : 0;
     }
 
-    public Double getReferralEarnings() {
-        return referralStats != null ? referralStats.getTotalEarned() : 0.0;
+    public BigDecimal getReferralEarnings() {
+        return referralStats != null ? referralStats.getTotalEarned() : BigDecimal.ZERO;
     }
 
     public boolean hasUsedReferralCode() {
         return usedReferralCode != null && !usedReferralCode.trim().isEmpty();
     }
 
-    public Double getUsedBonusBalance() {
-        return usedBonusBalance != null ? usedBonusBalance : 0.0;
-    }
 
-    public void setUsedBonusBalance(Double usedBonusBalance) {
+    public void setUsedBonusBalance(BigDecimal usedBonusBalance) {
         this.usedBonusBalance = usedBonusBalance;
     }
 }

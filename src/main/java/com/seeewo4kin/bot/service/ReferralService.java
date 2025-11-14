@@ -7,6 +7,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal; // ИЗМЕНЕНО
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -23,14 +25,15 @@ public class ReferralService {
     private final ReferralStatsRepository referralStatsRepository;
     private final ReferralBonusEventRepository bonusEventRepository;
 
+    // ИЗМЕНЕНО: Типы полей на BigDecimal
     @Value("${bot.referral.level1.percent:3.0}")
-    private Double level1Percent;
+    private BigDecimal level1Percent;
 
     @Value("${bot.referral.level2.percent:0.5}")
-    private Double level2Percent;
+    private BigDecimal level2Percent;
 
     @Value("${bot.referral.welcome.bonus:200}")
-    private Double welcomeBonus;
+    private BigDecimal welcomeBonus;
 
     public ReferralService(UserService userService,
                            ApplicationService applicationService,
@@ -48,32 +51,39 @@ public class ReferralService {
         this.bonusEventRepository = bonusEventRepository;
     }
 
-    // Добавим геттеры для процентов
-    public Double getLevel1Percent() {
+    // Геттеры для процентов
+    public BigDecimal getLevel1Percent() {
+        // ИЗМЕНЕНО: убран valueOf
         return level1Percent;
     }
 
-    public Double getLevel2Percent() {
+    public BigDecimal getLevel2Percent() {
+        // ИЗМЕНЕНО: убран valueOf
         return level2Percent;
     }
 
-    // Заменим processReferralReward на processReferralRewards
     public void processReferralRewards(Application application) {
         User user = application.getUser();
 
         // Находим пригласившего (уровень 1)
         User level1Inviter = user.getInvitedBy();
         if (level1Inviter != null) {
-            double rewardLevel1 = application.getCalculatedGiveValue() * (level1Percent / 100);
-            level1Inviter.setReferralBalance(level1Inviter.getReferralBalance() + rewardLevel1);
+            BigDecimal rewardLevel1 = application.getCalculatedGiveValue()
+                    .multiply(getLevel1Percent())
+                    .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP); // ИЗМЕНЕНО
+
+            level1Inviter.setReferralBalance(level1Inviter.getReferralBalance().add(rewardLevel1));
             application.setReferralRewardLevel1(rewardLevel1);
             userService.update(level1Inviter);
 
             // Находим пригласившего уровня 2
             User level2Inviter = level1Inviter.getInvitedBy();
             if (level2Inviter != null) {
-                double rewardLevel2 = application.getCalculatedGiveValue() * (level2Percent / 100);
-                level2Inviter.setReferralBalance(level2Inviter.getReferralBalance() + rewardLevel2);
+                BigDecimal rewardLevel2 = application.getCalculatedGiveValue()
+                        .multiply(getLevel2Percent())
+                        .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP); // ИЗМЕНЕНО
+
+                level2Inviter.setReferralBalance(level2Inviter.getReferralBalance().add(rewardLevel2));
                 application.setReferralRewardLevel2(rewardLevel2);
                 userService.update(level2Inviter);
             }
@@ -94,7 +104,8 @@ public class ReferralService {
         referralRelationshipRepository.save(level1Relation);
 
         // Начисляем welcome bonus приглашенному
-        invited.setBonusBalance(invited.getBonusBalance() + welcomeBonus);
+        // ИЗМЕНЕНО: убран valueOf
+        invited.setBonusBalance(invited.getBonusBalance().add(welcomeBonus));
         userService.update(invited);
 
         // Обновляем статистику приглашающего
@@ -108,7 +119,7 @@ public class ReferralService {
         referralCode.setCode(code);
         referralCode.setOwner(user);
         referralCode.setDescription("Реферальный код пользователя " + user.getUsername());
-        referralCode.setRewardPercent(level1Percent);
+        referralCode.setRewardPercent(level1Percent); // ИЗМЕНЕНО
         referralCode.setIsActive(true);
 
         return referralCodeRepository.save(referralCode);

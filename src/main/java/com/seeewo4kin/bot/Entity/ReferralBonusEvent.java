@@ -5,6 +5,7 @@ import jakarta.persistence.*;
 import jakarta.persistence.PrePersist;
 import lombok.Data;
 
+import java.math.BigDecimal; // ИЗМЕНЕНО
 import java.time.LocalDateTime;
 
 @Entity
@@ -20,7 +21,11 @@ public class ReferralBonusEvent {
     private User user;
 
     private BonusType bonusType;
-    private Double amount = 0.0;
+
+    // ИЗМЕНЕНО: double на BigDecimal
+    @Column(precision = 19, scale = 8)
+    private BigDecimal amount = BigDecimal.ZERO;
+
     private String description;
     private LocalDateTime createdAt;
 
