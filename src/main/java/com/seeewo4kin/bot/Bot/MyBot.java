@@ -16,6 +16,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
+import java.io.InputStream;
 
 @Component
 public class MyBot extends TelegramLongPollingBot {
@@ -84,11 +85,11 @@ public class MyBot extends TelegramLongPollingBot {
         }
     }
 
-    public int sendPhotoWithCaptionAndKeyboard(Long chatId, File photoFile, String caption, InlineKeyboardMarkup keyboard) {
+    public int sendPhotoWithCaptionAndKeyboard(Long chatId, InputStream photoStream, String fileName, String caption, InlineKeyboardMarkup keyboard) {
         try {
             SendPhoto sendPhoto = new SendPhoto();
             sendPhoto.setChatId(chatId.toString());
-            sendPhoto.setPhoto(new InputFile(photoFile));
+            sendPhoto.setPhoto(new InputFile(photoStream, fileName));
             sendPhoto.setCaption(caption);
             sendPhoto.setParseMode("HTML");
 
@@ -96,11 +97,9 @@ public class MyBot extends TelegramLongPollingBot {
                 sendPhoto.setReplyMarkup(keyboard);
             }
 
-            Message message = execute(sendPhoto);
-            return message.getMessageId();
+            return execute(sendPhoto).getMessageId();
         } catch (TelegramApiException e) {
-            e.printStackTrace();
-            return -1;
+            throw new RuntimeException(e);
         }
     }
 

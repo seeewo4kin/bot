@@ -8,12 +8,15 @@ import com.seeewo4kin.bot.Enums.UserState;
 import com.seeewo4kin.bot.Enums.ValueType;
 import com.seeewo4kin.bot.ValueGettr.CryptoPriceService;
 import com.seeewo4kin.bot.service.*;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
@@ -2278,7 +2281,10 @@ public class MessageProcessor {
 
 
     private void showMainMenu(Long chatId, User user, MyBot bot) {
-        File photoFile = new File("бот.png");
+        try {
+            // Загрузка фото из ресурсов
+            ClassPathResource photoResource = new ClassPathResource("images/бот.png");
+            InputStream photoStream = photoResource.getInputStream();
 
         String caption = """
         💼 Добро пожаловать в обменник — 𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻️
@@ -2310,12 +2316,46 @@ public class MessageProcessor {
         𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻️— тут уважают тех, кто ценит скорость, честность и результат. 🤝
         """;
 
-        // Создаем inline-клавиатуру
-        InlineKeyboardMarkup inlineKeyboard = createMainMenuInlineKeyboard(user);
+            InlineKeyboardMarkup inlineKeyboard = createMainMenuInlineKeyboard(user);
 
-        // Отправляем фото с текстом и клавиатурой
-        int messageId = bot.sendPhotoWithCaptionAndKeyboard(chatId, photoFile, caption, inlineKeyboard);
-        lastMessageId.put(chatId, messageId);
+            // Используем InputStream для отправки фото
+            int messageId = bot.sendPhotoWithCaptionAndKeyboard(chatId, photoStream,"bot.png" , caption, inlineKeyboard);
+            lastMessageId.put(chatId, messageId);
+        } catch (IOException e) {
+            String caption = """
+        💼 Добро пожаловать в обменник — 𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻️
+        🚀 Быстрый и надёжный обмен RUB → BTC / LTC / XMR 
+        ⚖️ ЛУЧШИЕ курсы, без задержек и скрытых комиссий.
+        💸 БОНУС: после каждой операции получаете 3% кешбэк на свой баланс!
+
+        📲 Как всё работает: 
+        1️⃣ Нажмите 💵 Купить или 💰 Продать 
+        2️⃣ Введите нужную сумму 🪙 
+        3️⃣ Укажите свой кошелёк 🔐
+        4️⃣ Выберите приоритет (🔹обычный / 👑 VIP) 
+        5️⃣ Подтвердите заявку ✅ 
+        6️⃣ Если готовы оплачивать — перешлите заявку оператору ☎️
+
+        ⚙️ Дополнительная информация: 
+        👑 VIP-приоритет — всего 300₽, заявка проходит мгновенно
+        📊 Загруженность сети BTC: низкая 🚥 
+        🕒 Время подтверждения: 5–20 минут 
+
+        💀 Чат: https://t.me/CosaNostraChange24
+        💬 Отзывы клиентов: t.me/CosaNostraChange24/4 
+        🧰 Техподдержка 24/7: @CN_BUGSY всегда онлайн, решим любой вопрос 🔧
+        ☎️ ОПЕРАТОР: @CN_BUGSY
+
+        🔴 ОПЕРАТОР НИКОГДА НЕ ПИШЕТ ПЕРВЫЙ🔴
+        🔴 ВСЕГДА СВЕРЯЙТЕ КОНТАКТЫ👉 ЮЗЕР = ИМЯ 🔴
+
+        𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻️— тут уважают тех, кто ценит скорость, честность и результат. 🤝
+        """;
+            InlineKeyboardMarkup inlineKeyboard = createMainMenuInlineKeyboard(user);
+            int messageId = bot.sendMessageWithInlineKeyboard(chatId, caption, inlineKeyboard);
+            lastMessageId.put(chatId, messageId);
+
+        }
     }
 
 
