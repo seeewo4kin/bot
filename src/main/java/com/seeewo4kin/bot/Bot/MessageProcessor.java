@@ -646,7 +646,7 @@ public class MessageProcessor {
     }
 
     private String formatApplicationMessage(Application application) {
-        String operationType = application.getUserValueGetType() == ValueType.BTC ? "покупкe" : "продажи";
+        String operationType = application.getUserValueGetType() == ValueType.BTC ? "покупку" : "продажу";
         String walletLabel = application.getUserValueGetType() == ValueType.BTC ? "🔐 Кошелек BTC" : "💳 Реквизиты для выплаты";
 
         StringBuilder message = new StringBuilder();
@@ -655,7 +655,7 @@ public class MessageProcessor {
                 📝 ID: %s
 
                 %s Отдаете: %s %s
-                💰 Получаете: %s %s
+                💰 Получаете: %s 
                 %s: %s
                 %s
                 """,
@@ -664,7 +664,6 @@ public class MessageProcessor {
                 application.getUserValueGetType() == ValueType.BTC ? "💸" : "₿",
                 application.getUserValueGetType() == ValueType.BTC ?
                         formatRubAmount(application.getCalculatedGiveValue()) : formatBtcAmount(application.getCalculatedGiveValue()),
-                application.getUserValueGetType() == ValueType.BTC ? "₽" : "BTC",
                 application.getUserValueGetType() == ValueType.BTC ?
                         formatBtcAmount(application.getCalculatedGetValue()) : formatRubAmount(application.getCalculatedGetValue()),
                 application.getUserValueGetType() == ValueType.BTC ? "BTC" : "₽",
@@ -680,9 +679,11 @@ public class MessageProcessor {
         message.append(String.format("""
                 🕰️ Срок действия: до %s
 
-                Перешлите эту заявку оператору: @SUP_CN
+                Перешлите эту заявку оператору: @CN_BUGSY
 
                 Статус: %s
+                
+                💡 Если оператор не отвечает, нажмите кнопку "🆘 У меня СПАМ-БЛОК"
                 """,
                 application.getFormattedExpiresAt(),
                 application.getStatus().getDisplayName()
@@ -2280,35 +2281,34 @@ public class MessageProcessor {
         File photoFile = new File("бот.png");
 
         String caption = """
-            💼 Добро пожаловать в обменник — 𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻️
-            🚀 Быстрый и надёжный обмен RUB → BTC / LTC / XMR 
-            ⚖️ ЛУЧШИЕ курсы, без задержек и скрытых комиссий.
-            💸 БОНУС: после каждой операции получаете 3% кешбэк на свой баланс!
+        💼 Добро пожаловать в обменник — 𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻️
+        🚀 Быстрый и надёжный обмен RUB → BTC / LTC / XMR 
+        ⚖️ ЛУЧШИЕ курсы, без задержек и скрытых комиссий.
+        💸 БОНУС: после каждой операции получаете 3% кешбэк на свой баланс!
 
-            📲 Как всё работает: 
-            1️⃣ Нажмите 💵 Купить или 💰 Продать 
-            2️⃣ Введите нужную сумму 🪙 
-            3️⃣ Укажите свой кошелёк 🔐
-            4️⃣ Выберите приоритет (🔹обычный / 👑 VIP) 
-            5️⃣ Подтвердите заявку ✅ 
-            6️⃣ Если готовы оплачивать — перешлите заявку оператору ☎️
+        📲 Как всё работает: 
+        1️⃣ Нажмите 💵 Купить или 💰 Продать 
+        2️⃣ Введите нужную сумму 🪙 
+        3️⃣ Укажите свой кошелёк 🔐
+        4️⃣ Выберите приоритет (🔹обычный / 👑 VIP) 
+        5️⃣ Подтвердите заявку ✅ 
+        6️⃣ Если готовы оплачивать — перешлите заявку оператору ☎️
 
-            ⚙️ Дополнительная информация: 
-            👑 VIP-приоритет — всего 300₽, заявка проходит мгновенно
-            📊 Загруженность сети BTC: низкая 🚥 
-            🕒 Время подтверждения: 5–20 минут 
+        ⚙️ Дополнительная информация: 
+        👑 VIP-приоритет — всего 300₽, заявка проходит мгновенно
+        📊 Загруженность сети BTC: низкая 🚥 
+        🕒 Время подтверждения: 5–20 минут 
 
-            💀 Чат: https://t.me/CosaNostraChange24
-            💬 Отзывы клиентов: t.me/CosaNostraChange24/4 
-            🧰 Техподдержка 24/7: @CN_LUCKYY  @CN_PAUL всегда онлайн, решим любой вопрос 🔧
-            ☎️ ОПЕРАТОР: @SUP_CN
+        💀 Чат: https://t.me/CosaNostraChange24
+        💬 Отзывы клиентов: t.me/CosaNostraChange24/4 
+        🧰 Техподдержка 24/7: @CN_BUGSY всегда онлайн, решим любой вопрос 🔧
+        ☎️ ОПЕРАТОР: @CN_BUGSY
 
-            🔴 ОПЕРАТОР НИКОГДА НЕ ПИШЕТ ПЕРВЫМ🔴
-            🔴 ВСЕГДА СВЕРЯЙТЕ КОНТАКТЫ👉 ЮЗЕР = ИМЯ 🔴
+        🔴 ОПЕРАТОР НИКОГДА НЕ ПИШЕТ ПЕРВЫЙ🔴
+        🔴 ВСЕГДА СВЕРЯЙТЕ КОНТАКТЫ👉 ЮЗЕР = ИМЯ 🔴
 
-
-            𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻️— тут уважают тех, кто ценит скорость, честность и результат. 🤝
-            """;
+        𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻️— тут уважают тех, кто ценит скорость, честность и результат. 🤝
+        """;
 
         // Создаем inline-клавиатуру
         InlineKeyboardMarkup inlineKeyboard = createMainMenuInlineKeyboard(user);
@@ -4558,12 +4558,20 @@ public class MessageProcessor {
         // Вторая строка: оператор
         List<InlineKeyboardButton> row2 = new ArrayList<>();
         InlineKeyboardButton operatorButton = new InlineKeyboardButton();
-        operatorButton.setText("📞 Написать оператору @SUP_CN");
-        operatorButton.setUrl("https://t.me/SUP_CN");
+        operatorButton.setText("📞 Написать оператору @CN_BUGSY");
+        operatorButton.setUrl("https://t.me/CN_BUGSY");
         row2.add(operatorButton);
+
+        // Третья строка: спам-блок
+        List<InlineKeyboardButton> row3 = new ArrayList<>();
+        InlineKeyboardButton spamButton = new InlineKeyboardButton();
+        spamButton.setText("🆘 У меня СПАМ-БЛОК");
+        spamButton.setCallbackData("inline_spam_block_help");
+        row3.add(spamButton);
 
         rows.add(row1);
         rows.add(row2);
+        rows.add(row3);
 
         markup.setKeyboard(rows);
         return markup;
@@ -5183,7 +5191,7 @@ public class MessageProcessor {
         activeAppsButton.setCallbackData("inline_admin_active");
         row1.add(activeAppsButton);
 
-        // Второй ряд - ДОБАВЛЕНА КНОПКА "ВЗЯТЬ"
+        // Второй ряд
         List<InlineKeyboardButton> row2 = new ArrayList<>();
         InlineKeyboardButton takeButton = new InlineKeyboardButton();
         takeButton.setText("🎯 Взять заявку");
@@ -5195,57 +5203,23 @@ public class MessageProcessor {
         myAppsButton.setCallbackData("inline_admin_my_applications");
         row2.add(myAppsButton);
 
-        // Третий ряд
+        // Третий ряд - навигация
         List<InlineKeyboardButton> row3 = new ArrayList<>();
-        InlineKeyboardButton searchButton = new InlineKeyboardButton();
-        searchButton.setText("👥 Поиск");
-        searchButton.setCallbackData("inline_admin_search");
-        row3.add(searchButton);
-
-        InlineKeyboardButton couponButton = new InlineKeyboardButton();
-        couponButton.setText("🎫 Купоны");
-        couponButton.setCallbackData("inline_admin_coupon");
-        row3.add(couponButton);
-
-        // Четвертый ряд
-        List<InlineKeyboardButton> row4 = new ArrayList<>();
-        InlineKeyboardButton commissionButton = new InlineKeyboardButton();
-        commissionButton.setText("💰 Комиссии");
-        commissionButton.setCallbackData("inline_admin_commission");
-        row4.add(commissionButton);
-
-        InlineKeyboardButton timeFilterButton = new InlineKeyboardButton();
-        timeFilterButton.setText("📅 Фильтр по времени");
-        timeFilterButton.setCallbackData("inline_admin_time");
-        row4.add(timeFilterButton);
-
-        // Пятый ряд
-        List<InlineKeyboardButton> row5 = new ArrayList<>();
-        InlineKeyboardButton bonusButton = new InlineKeyboardButton();
-        bonusButton.setText("💳 Бонусные балансы");
-        bonusButton.setCallbackData("inline_admin_bonus_manage");
-        row5.add(bonusButton);
-
-        // Шестой ряд - навигация
-        List<InlineKeyboardButton> row6 = new ArrayList<>();
         InlineKeyboardButton backButton = new InlineKeyboardButton();
         backButton.setText("🔙 Назад");
         backButton.setCallbackData("inline_admin_back");
-        row6.add(backButton);
+        row3.add(backButton);
 
-        List<InlineKeyboardButton> row7 = new ArrayList<>();
+        List<InlineKeyboardButton> row4 = new ArrayList<>();
         InlineKeyboardButton mainMenuButton = new InlineKeyboardButton();
         mainMenuButton.setText("💎 Главное меню");
         mainMenuButton.setCallbackData("inline_main_menu");
-        row7.add(mainMenuButton);
+        row4.add(mainMenuButton);
 
         rows.add(row1);
         rows.add(row2);
         rows.add(row3);
         rows.add(row4);
-        rows.add(row5);
-        rows.add(row6);
-        rows.add(row7);
 
         markup.setKeyboard(rows);
         return markup;
