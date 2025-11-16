@@ -690,7 +690,7 @@ public class MessageProcessor {
 
         📊 Статус: %s
         
-        💡 Если оператор не отвечает, нажмите кнопку 🆘 ниже
+        💡 Если у вас спам-блок, нажмите кнопку 🆘 ниже
         """,
                 application.getFormattedExpiresAt(),
                 application.getStatus().getDisplayName()
