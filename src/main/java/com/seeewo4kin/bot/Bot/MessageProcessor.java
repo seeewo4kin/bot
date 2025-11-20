@@ -686,7 +686,7 @@ public class MessageProcessor {
 
         ⏳ Срок действия: до %s
 
-        👨‍💼 Перешлите эту заявку оператору: @CN_BUGSY
+        👨‍💼 Перешлите эту заявку оператору: @SUP_CN
 
         📊 Статус: %s
         
@@ -946,7 +946,7 @@ public class MessageProcessor {
         Не подвергайтесь провокациям мошенников, наш оператор первым не пишет✍️
 
         Актуальные контакты:
-        Бот:🤖 @COSANOSTRA24_bot
+        ЧАТ/БОТ/ОТЗЫВЫ/РЕЗЕРВ :@CN_FEEDBACKBOT
         ☎️Оператор 24/7: @SUP_CN
         
         Для продолжения пройдите проверку безопасности:
@@ -2243,7 +2243,7 @@ public class MessageProcessor {
         🎁 — Средства, отправленные по неверным реквизитам, считаются безвозвратным подарком владельцу счета.
 
         📞 Актуальные контакты:
-        🤖 Бот: @COSANOSTRA24_bot
+        🤖 БОТ/ЧАТ/ОТЗЫВЫ/ПОДДЕРЖКА :@CN_FEEDBACKBOT
         ☎️ Оператор 24/7: @SUP_CN
         """;
 
@@ -2305,13 +2305,12 @@ public class MessageProcessor {
         📊 Загруженность сети BTC: низкая 🚥 
         🕒 Время подтверждения: 5–20 минут 
 
-        💀 Чат: https://t.me/CosaNostraChange24
-        💬 Отзывы клиентов: t.me/CosaNostraChange24/4 
+        💀 Переходник (ЧАТ/БОТ/ОТЗЫВЫ/РЕЗЕРВ) @COSANOSTRALOBBYBOT 
         🧰 Техподдержка 24/7: @CN_BUGSY всегда онлайн, решим любой вопрос 🔧
-        ☎️ ОПЕРАТОР: @CN_BUGSY
+        ☎️ ОПЕРАТОР: @SUP_CN
 
         🔴 ОПЕРАТОР НИКОГДА НЕ ПИШЕТ ПЕРВЫЙ🔴
-        🔴 ВСЕГДА СВЕРЯЙТЕ КОНТАКТЫ👉 ЮЗЕР = ИМЯ 🔴
+        🔴 ВСЕГДА СВЕРЯЙТЕ КОНТАКТЫ
 
         𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻️— тут уважают тех, кто ценит скорость, честность и результат. 🤝
         """;
@@ -2620,7 +2619,7 @@ public class MessageProcessor {
         • Загруженность: Низкая 🟢
         • Время подтверждения: 5-20 минут
 
-        👨‍💼 Оператор: @CN_BUGSY
+        👨‍💼 Оператор: @SUP_CN
 
         Выберите приоритет обработки:
         """,
@@ -3206,15 +3205,20 @@ public class MessageProcessor {
         spamButton.setCallbackData("inline_spam_block_help");
         row4.add(spamButton);
 
-        // --- РЯД 5 (Навигация) ---
+        // --- РЯД 5 (НОВАЯ КНОПКА для обратной связи) ---
         List<InlineKeyboardButton> row5 = new ArrayList<>();
-        InlineKeyboardButton backButton = new InlineKeyboardButton();
-        backButton.setText("🔙 Назад");
-        backButton.setCallbackData("inline_back");
-        row5.add(backButton);
+        InlineKeyboardButton feedbackBotButton = new InlineKeyboardButton();
+        feedbackBotButton.setText("💬 ОСтавить отзыв");
+        feedbackBotButton.setUrl("https://t.me/CN_FEEDBACKBOT");
+        row5.add(feedbackBotButton);
 
         // --- РЯД 6 (Навигация) ---
         List<InlineKeyboardButton> row6 = new ArrayList<>();
+        InlineKeyboardButton backButton = new InlineKeyboardButton();
+        backButton.setText("🔙 Назад");
+        backButton.setCallbackData("inline_back");
+        row6.add(backButton);
+
         InlineKeyboardButton mainMenuButton = new InlineKeyboardButton();
         mainMenuButton.setText("💎 Главное меню");
         mainMenuButton.setCallbackData("inline_main_menu");
@@ -3224,9 +3228,9 @@ public class MessageProcessor {
         rows.add(row1);
         rows.add(row2);
         rows.add(row3);
-        rows.add(row4); // <-- Новый ряд
-        rows.add(row5);
-        rows.add(row6);
+        rows.add(row4); // Спам-блок
+        rows.add(row5); // Новая кнопка для перехода к боту поддержки
+        rows.add(row6); // Навигация
 
         markup.setKeyboard(rows);
         return markup;
@@ -4504,8 +4508,8 @@ public class MessageProcessor {
         // Вторая строка: оператор и спам-блок
         List<InlineKeyboardButton> row2 = new ArrayList<>();
         InlineKeyboardButton operatorButton = new InlineKeyboardButton();
-        operatorButton.setText("📞 Написать оператору @CN_BUGSY");
-        operatorButton.setUrl("https://t.me/CN_BUGSY");
+        operatorButton.setText("📞 Написать оператору @SUP_CN");
+        operatorButton.setUrl("https://t.me/SUP_CN");
         row2.add(operatorButton);
 
         InlineKeyboardButton spamButton = new InlineKeyboardButton();

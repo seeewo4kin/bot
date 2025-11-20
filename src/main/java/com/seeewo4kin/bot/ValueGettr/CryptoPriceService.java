@@ -32,7 +32,7 @@ public class CryptoPriceService {
             "ETH", "ETHUSDT",
             "XMR", "XMRUSDT",
             "LTC", "LTCUSDT",
-            "USDT", "USDTUSDT" // Для USDT используем статическое значение
+            "USDT", "USDTUSDT"
     );
 
     // Fallback rates
@@ -59,20 +59,19 @@ public class CryptoPriceService {
      */
     private void updateAllPrices() {
         try {
-            // Обновляем цены для основных криптовалют
             updatePriceAsync("BTC");
             updatePriceAsync("ETH");
             updatePriceAsync("XMR");
-            updatePriceAsync("LTC");
+            updatePriceAsync("LTC"); // ← LTC ОБНОВЛЯЕТСЯ ЗДЕСЬ
             updatePriceAsync("USDT");
 
-            // Получаем курсы фиатных валют
             updateFiatRates();
 
         } catch (Exception e) {
             System.err.println("Error updating prices: " + e.getMessage());
         }
     }
+
 
     /**
      * Асинхронное обновление цены для конкретной криптовалюты
