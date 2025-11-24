@@ -3,7 +3,10 @@ package com.seeewo4kin.bot.Enums;
 public enum ValueType {
     RUB("🇷🇺 RUB"),
     BTC("₿ Bitcoin"),
-    COUPONS("🎫 Купоны");
+    COUPONS("🎫 Купоны"),
+    LTC("Litecoin"),
+    XMR("Monero"),
+    CRYPTO("Крипта");
 
     private final String displayName;
 

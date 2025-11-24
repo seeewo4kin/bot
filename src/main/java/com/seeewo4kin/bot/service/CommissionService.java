@@ -15,39 +15,41 @@ public class CommissionService {
     }
 
     public BigDecimal calculateCommission(BigDecimal amount) {
-        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
-            return BigDecimal.ZERO;
-        }
+        // Получаем процент комиссии для данной суммы
+        BigDecimal commissionPercent = commissionConfig.getCommissionPercent(amount);
 
-        BigDecimal percent = getCommissionPercent(amount);
-        return amount.multiply(percent).divide(BigDecimal.valueOf(100), 8, RoundingMode.HALF_UP);
+        // Рассчитываем комиссию: amount * (commissionPercent / 100)
+        BigDecimal commission = amount.multiply(commissionPercent)
+                .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
+
+        System.out.println("DEBUG: Commission calculation - Amount: " + amount +
+                ", Percent: " + commissionPercent + "%, Commission: " + commission);
+
+        return commission;
     }
 
     public BigDecimal calculateTotalWithCommission(BigDecimal amount) {
-        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
-            return BigDecimal.ZERO;
-        }
-
         BigDecimal commission = calculateCommission(amount);
-        return amount.add(commission);
+        BigDecimal total = amount.add(commission);
+
+        System.out.println("DEBUG: Total with commission - Amount: " + amount +
+                ", Total: " + total);
+
+        return total;
+    }
+
+    public BigDecimal calculateTotalWithoutCommission(BigDecimal amount) {
+        // Для продажи: сумма которую получит пользователь после вычета комиссии
+        BigDecimal commission = calculateCommission(amount);
+        BigDecimal total = amount.subtract(commission);
+
+        System.out.println("DEBUG: Total without commission - Amount: " + amount +
+                ", Total: " + total);
+
+        return total;
     }
 
     public BigDecimal getCommissionPercent(BigDecimal amount) {
-        if (amount == null) {
-            return BigDecimal.valueOf(5.0); // дефолтное значение
-        }
-
-        // Логика расчета процента комиссии
-        if (amount.compareTo(BigDecimal.valueOf(1000)) >= 0 && amount.compareTo(BigDecimal.valueOf(1999)) <= 0) {
-            return BigDecimal.valueOf(5.0);
-        } else if (amount.compareTo(BigDecimal.valueOf(2000)) >= 0 && amount.compareTo(BigDecimal.valueOf(2999)) <= 0) {
-            return BigDecimal.valueOf(4.5);
-        } else if (amount.compareTo(BigDecimal.valueOf(3000)) >= 0 && amount.compareTo(BigDecimal.valueOf(4999)) <= 0) {
-            return BigDecimal.valueOf(4.0);
-        } else if (amount.compareTo(BigDecimal.valueOf(5000)) >= 0) {
-            return BigDecimal.valueOf(3.5);
-        } else {
-            return BigDecimal.valueOf(5.0);
-        }
+        return commissionConfig.getCommissionPercent(amount);
     }
 }

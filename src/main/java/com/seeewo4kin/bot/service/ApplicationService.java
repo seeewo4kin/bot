@@ -27,4 +27,6 @@ public interface ApplicationService {
     public List<Application> findByUserAndStatusIn(Long userId, List<ApplicationStatus> statuses);
     public List<Application> findCompletedApplicationsByUser(Long userId);
     public List<Application> findByAdminId(Long adminId);
-    }
+
+    List<Application> findExpiredApplications();
+}

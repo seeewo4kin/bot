@@ -24,4 +24,5 @@ public interface ApplicationRepository extends JpaRepository<Application, Long> 
     List<Application> findByCreatedAtBetween(LocalDateTime startDate, LocalDateTime endDate);
     @Query("SELECT a FROM Application a WHERE a.adminId = :adminId ORDER BY a.createdAt DESC")
     List<Application> findByAdminId(@Param("adminId") Long adminId);
-}
+    @Query("SELECT a FROM Application a WHERE a.expiresAt < CURRENT_TIMESTAMP AND a.status IN ('FREE', 'IN_WORK')")
+    List<Application> findExpiredApplications();}

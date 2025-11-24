@@ -1,6 +1,7 @@
 package com.seeewo4kin.bot.Entity;
 
 import com.seeewo4kin.bot.Enums.ApplicationStatus;
+import com.seeewo4kin.bot.Enums.CryptoCurrency;
 import com.seeewo4kin.bot.Enums.ValueType;
 import jakarta.persistence.*;
 import lombok.Data;
@@ -23,6 +24,12 @@ public class Application {
 
     private String title;
     private String description;
+
+    @Column(name = "original_give_value", precision = 19, scale = 8)
+    private BigDecimal originalGiveValue;
+
+    @Column(name = "original_get_value", precision = 19, scale = 8)
+    private BigDecimal originalGetValue;
 
     @Enumerated(EnumType.STRING)
     private ValueType userValueGetType;
@@ -47,14 +54,21 @@ public class Application {
     private BigDecimal usedBonusBalance = BigDecimal.ZERO;
     private BigDecimal referralRewardLevel1 = BigDecimal.ZERO;
     private BigDecimal referralRewardLevel2 = BigDecimal.ZERO;
-    private long adminId;
+
+    @Column(name = "admin_id")
+    private Long adminId;
 
     @Enumerated(EnumType.STRING)
     private ApplicationStatus status = ApplicationStatus.FREE;
 
+    private CryptoCurrency cryptoCurrency; // Тип криптовалюты
+
     @ManyToOne
     @JoinColumn(name = "coupon_id")
     private Coupon appliedCoupon;
+
+    @Column(name = "commission_percent")
+    private BigDecimal commissionPercent = BigDecimal.ZERO;
 
     @Column(name = "final_amount_after_discount", precision = 19, scale = 8)
     private BigDecimal finalAmountAfterDiscount;
@@ -68,13 +82,15 @@ public class Application {
     @Column(name = "expires_at")
     private LocalDateTime expiresAt;
 
+    public CryptoCurrency getCryptoCurrency() { return cryptoCurrency; }
+    public void setCryptoCurrency(CryptoCurrency cryptoCurrency) { this.cryptoCurrency = cryptoCurrency; }
+
     // Новое поле для хранения ID сообщения в Telegram
     private Integer telegramMessageId;
 
     @ManyToOne
     @JoinColumn(name = "user_id")
     private User user;
-
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
@@ -91,5 +107,20 @@ public class Application {
 
     public long getMinutesLeft() {
         return Math.max(0, java.time.Duration.between(LocalDateTime.now(), expiresAt).toMinutes());
+    }
+    public BigDecimal getCommissionAmount() {
+        return commissionAmount != null ? commissionAmount : BigDecimal.ZERO;
+    }
+
+    public void setCommissionAmount(BigDecimal commissionAmount) {
+        this.commissionAmount = commissionAmount;
+    }
+
+    public BigDecimal getCommissionPercent() {
+        return commissionPercent != null ? commissionPercent : BigDecimal.ZERO;
+    }
+
+    public void setCommissionPercent(BigDecimal commissionPercent) {
+        this.commissionPercent = commissionPercent;
     }
 }

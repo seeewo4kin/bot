@@ -102,4 +102,8 @@ public class ApplicationServiceImpl implements ApplicationService {
         return applicationRepository.findByAdminId(adminId);
     }
 
+    public List<Application> findExpiredApplications() {
+        return applicationRepository.findExpiredApplications();
+    }
+
 }

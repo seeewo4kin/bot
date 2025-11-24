@@ -51,8 +51,9 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
-    public void update(User user) {
+    public boolean update(User user) {
         userRepository.save(user);
+        return true;
     }
 
     @Override

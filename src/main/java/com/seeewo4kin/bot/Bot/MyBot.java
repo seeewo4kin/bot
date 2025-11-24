@@ -70,38 +70,6 @@ public class MyBot extends TelegramLongPollingBot {
         }
     }
 
-    public int sendMessageWithKeyboard(Long chatId, String text, ReplyKeyboardMarkup keyboard) {
-        SendMessage message = new SendMessage();
-        message.setChatId(chatId.toString());
-        message.setText(text);
-        message.setReplyMarkup(keyboard);
-
-        try {
-            Message sentMessage = execute(message);
-            return sentMessage.getMessageId();
-        } catch (TelegramApiException e) {
-            e.printStackTrace();
-            return -1;
-        }
-    }
-
-    public int sendPhotoWithCaptionAndKeyboard(Long chatId, InputStream photoStream, String fileName, String caption, InlineKeyboardMarkup keyboard) {
-        try {
-            SendPhoto sendPhoto = new SendPhoto();
-            sendPhoto.setChatId(chatId.toString());
-            sendPhoto.setPhoto(new InputFile(photoStream, fileName));
-            sendPhoto.setCaption(caption);
-            sendPhoto.setParseMode("HTML");
-
-            if (keyboard != null) {
-                sendPhoto.setReplyMarkup(keyboard);
-            }
-
-            return execute(sendPhoto).getMessageId();
-        } catch (TelegramApiException e) {
-            throw new RuntimeException(e);
-        }
-    }
 
     public int sendMessageWithInlineKeyboard(Long chatId, String text, InlineKeyboardMarkup keyboard) {
         SendMessage message = new SendMessage();

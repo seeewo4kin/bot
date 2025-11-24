@@ -39,8 +39,8 @@ public class CryptoPriceService {
     private static final Map<String, Map<String, BigDecimal>> FALLBACK_RATES = Map.of(
             "BTC", Map.of("USD",  BigDecimal.valueOf(45000.0), "RUB", BigDecimal.valueOf(4000000.0), "EUR", BigDecimal.valueOf(41000.0)),
             "ETH", Map.of("USD", BigDecimal.valueOf(3000.0), "RUB", BigDecimal.valueOf(270000.0), "EUR", BigDecimal.valueOf(2700.0)),
-            "XMR", Map.of("USD", BigDecimal.valueOf(150.0), "RUB", BigDecimal.valueOf(13500.0), "EUR", BigDecimal.valueOf(140.0)),
-            "LTC", Map.of("USD", BigDecimal.valueOf(75.0), "RUB", BigDecimal.valueOf(6800.0), "EUR", BigDecimal.valueOf(70.0)),
+            "XMR", Map.of("USD", BigDecimal.valueOf(359.0), "RUB", BigDecimal.valueOf(25000.0), "EUR", BigDecimal.valueOf(140.0)),
+            "LTC", Map.of("USD", BigDecimal.valueOf(84.0), "RUB", BigDecimal.valueOf(6800.0), "EUR", BigDecimal.valueOf(70.0)),
             "USDT", Map.of("USD", BigDecimal.valueOf(1.0), "RUB", BigDecimal.valueOf(92.0), "EUR", BigDecimal.valueOf(0.92)),
             "USDC", Map.of("USD", BigDecimal.valueOf(1.0), "RUB", BigDecimal.valueOf(92.0), "EUR", BigDecimal.valueOf(0.92)),
             "COUPONS", Map.of("USD", BigDecimal.valueOf(1.0), "RUB", BigDecimal.valueOf(92.0), "EUR", BigDecimal.valueOf(0.92))
