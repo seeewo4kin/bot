@@ -14,13 +14,11 @@ public class HeartbeatService {
 
     private final MyBot bot;
     private final Long heartbeatChatId;
-    private final UserService userService;
 
     public HeartbeatService(@Lazy MyBot bot,
-                            @Value("${bot.heartbeat.chatId:0}") Long heartbeatChatId, UserService userService) {
+                            @Value("${bot.heartbeat.chatId:0}") Long heartbeatChatId) {
         this.bot = bot;
         this.heartbeatChatId = heartbeatChatId;
-        this.userService = userService;
     }
 
     // fixedRate = 600000 (10 минут * 60 сек * 1000 мс)

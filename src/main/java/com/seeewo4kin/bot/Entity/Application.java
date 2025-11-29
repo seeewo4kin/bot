@@ -1,6 +1,7 @@
 package com.seeewo4kin.bot.Entity;
 
 import com.seeewo4kin.bot.Enums.ApplicationStatus;
+import com.seeewo4kin.bot.Enums.CryptoCurrency;
 import com.seeewo4kin.bot.Enums.ValueType;
 import jakarta.persistence.*;
 import lombok.Data;
@@ -30,6 +31,10 @@ public class Application {
     @Enumerated(EnumType.STRING)
     private ValueType userValueGiveType;
 
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = true)
+    private CryptoCurrency cryptoCurrency;
+
     @Column(name = "user_value_get_value", precision = 19, scale = 8)
     private BigDecimal userValueGetValue;
     @Column(name = "user_value_give_value", precision = 19, scale = 8)
@@ -40,14 +45,22 @@ public class Application {
     @Column(name = "calculated_get_value", precision = 19, scale = 8)
     private BigDecimal calculatedGetValue;
 
+    @Column(name = "original_give_value", precision = 19, scale = 8)
+    private BigDecimal originalGiveValue;
+    @Column(name = "original_get_value", precision = 19, scale = 8)
+    private BigDecimal originalGetValue;
+
     @Column(name = "commission_amount", precision = 19, scale = 8)
     private BigDecimal commissionAmount;
+
+    @Column(name = "commission_percent", precision = 5, scale = 2)
+    private BigDecimal commissionPercent;
 
     @Column(name = "used_bonus_balance", precision = 19, scale = 8)
     private BigDecimal usedBonusBalance = BigDecimal.ZERO;
     private BigDecimal referralRewardLevel1 = BigDecimal.ZERO;
     private BigDecimal referralRewardLevel2 = BigDecimal.ZERO;
-    private long adminId;
+    private Long adminId;
 
     @Enumerated(EnumType.STRING)
     private ApplicationStatus status = ApplicationStatus.FREE;
@@ -79,6 +92,18 @@ public class Application {
     protected void onCreate() {
         createdAt = LocalDateTime.now();
         expiresAt = LocalDateTime.now().plusMinutes(40); // 5 минут
+        // Валидация cryptoCurrency
+        if (this.cryptoCurrency == null) {
+            this.cryptoCurrency = CryptoCurrency.BTC;
+        }
+    }
+
+    @PostLoad
+    protected void onLoad() {
+        // Автоматическая валидация при загрузке из БД
+        if (this.cryptoCurrency == null) {
+            this.cryptoCurrency = CryptoCurrency.BTC;
+        }
     }
 
     public boolean isExpired() {
@@ -91,5 +116,19 @@ public class Application {
 
     public long getMinutesLeft() {
         return Math.max(0, java.time.Duration.between(LocalDateTime.now(), expiresAt).toMinutes());
+    }
+
+    /**
+     * Безопасное получение криптовалюты с fallback на BTC
+     */
+    public CryptoCurrency getCryptoCurrencySafe() {
+        return cryptoCurrency != null ? cryptoCurrency : CryptoCurrency.BTC;
+    }
+
+    /**
+     * Установка криптовалюты с валидацией
+     */
+    public void setCryptoCurrencySafe(CryptoCurrency crypto) {
+        this.cryptoCurrency = crypto;
     }
 }

@@ -39,6 +39,12 @@ public class UserServiceImpl implements UserService {
 
         return user;
     }
+
+    public boolean wasUserCreated(User user, org.telegram.telegrambots.meta.api.objects.User telegramUser) {
+        // Проверяем, был ли пользователь создан только что (ID не установлен или время создания недавнее)
+        return user.getId() == null || user.getCreatedAt() == null ||
+               java.time.Duration.between(user.getCreatedAt(), java.time.LocalDateTime.now()).toMinutes() < 1;
+    }
     @Override
     @Transactional(readOnly = true)
     public int getActiveUsersCount() {
@@ -81,5 +87,21 @@ public class UserServiceImpl implements UserService {
     public List<User> findAllActiveUsers() {
         // Возвращаем всех пользователей, которые прошли капчу (не в состоянии START)
         return userRepository.findByStateNot(UserState.START);
+    }
+
+    @Override
+    public List<User> findRecentUsers() {
+        // Возвращаем пользователей, созданных за последние 24 часа
+        java.time.LocalDateTime yesterday = java.time.LocalDateTime.now().minusDays(1);
+        return userRepository.findAll().stream()
+                .filter(user -> user.getCreatedAt() != null && user.getCreatedAt().isAfter(yesterday))
+                .sorted((u1, u2) -> u2.getCreatedAt().compareTo(u1.getCreatedAt()))
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public long getUsersWithReferralCodeCount() {
+        return userRepository.countByUsedReferralCodeIsNotNull();
     }
 }

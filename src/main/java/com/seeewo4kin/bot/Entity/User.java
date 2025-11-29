@@ -61,9 +61,9 @@ public class User {
 
     private LocalDateTime invitedAt;
 
-    // Исправим отношение на OneToOne
-    @OneToOne(mappedBy = "user", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
-    private ReferralStats referralStats;
+    // Исправим отношение на embedded
+    @Embedded
+    private ReferralStatsEmbedded referralStats;
 
     // Добавим связь с реферальными кодами
     @OneToMany(mappedBy = "owner", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
@@ -76,24 +76,38 @@ public class User {
     protected void onCreate() {
         createdAt = LocalDateTime.now();
         if (this.referralStats == null) {
-            this.referralStats = new ReferralStats();
-            this.referralStats.setUser(this);
+            this.referralStats = new ReferralStatsEmbedded();
+        }
+    }
+
+    @PostLoad
+    protected void onLoad() {
+        // Обеспечиваем инициализацию реферальной статистики при загрузке из БД
+        if (this.referralStats != null) {
+            this.referralStats.ensureInitialized();
+        } else {
+            this.referralStats = new ReferralStatsEmbedded();
         }
     }
 
     // Геттеры для статистики рефералов
     public Integer getReferralCount() {
-        return referralStats != null ? referralStats.getLevel1Count() : 0;
+        return referralStats != null ? referralStats.getLevel1CountSafe() : 0;
     }
 
     public BigDecimal getReferralEarnings() {
-        return referralStats != null ? referralStats.getTotalEarned() : BigDecimal.ZERO;
+        return referralStats != null ? referralStats.getTotalEarnedSafe() : BigDecimal.ZERO;
     }
 
     public boolean hasUsedReferralCode() {
         return usedReferralCode != null && !usedReferralCode.trim().isEmpty();
     }
 
+    public void setReferralCount(int count) {
+        if (this.referralStats != null) {
+            this.referralStats.setLevel1Count(count);
+        }
+    }
 
     public void setUsedBonusBalance(BigDecimal usedBonusBalance) {
         this.usedBonusBalance = usedBonusBalance;

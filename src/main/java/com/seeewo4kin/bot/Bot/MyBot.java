@@ -2,6 +2,7 @@ package com.seeewo4kin.bot.Bot;
 
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
+import org.telegram.telegrambots.meta.api.methods.CopyMessage;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.send.SendPhoto;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage;
@@ -16,7 +17,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
-import java.io.InputStream;
 
 @Component
 public class MyBot extends TelegramLongPollingBot {
@@ -55,7 +55,7 @@ public class MyBot extends TelegramLongPollingBot {
         }
     }
 
-    public int sendMessageWithKeyboard(Long chatId, String text, InlineKeyboardMarkup keyboard) {
+    public int sendMessageWithInlineKeyboard(Long chatId, String text, InlineKeyboardMarkup keyboard) {
         SendMessage message = new SendMessage();
         message.setChatId(chatId.toString());
         message.setText(text);
@@ -85,25 +85,7 @@ public class MyBot extends TelegramLongPollingBot {
         }
     }
 
-    public int sendPhotoWithCaptionAndKeyboard(Long chatId, InputStream photoStream, String fileName, String caption, InlineKeyboardMarkup keyboard) {
-        try {
-            SendPhoto sendPhoto = new SendPhoto();
-            sendPhoto.setChatId(chatId.toString());
-            sendPhoto.setPhoto(new InputFile(photoStream, fileName));
-            sendPhoto.setCaption(caption);
-            sendPhoto.setParseMode("HTML");
-
-            if (keyboard != null) {
-                sendPhoto.setReplyMarkup(keyboard);
-            }
-
-            return execute(sendPhoto).getMessageId();
-        } catch (TelegramApiException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    public int sendMessageWithInlineKeyboard(Long chatId, String text, InlineKeyboardMarkup keyboard) {
+    public int sendMessageWithKeyboard(Long chatId, String text, InlineKeyboardMarkup keyboard) {
         SendMessage message = new SendMessage();
         message.setChatId(chatId.toString());
         message.setText(text);
@@ -175,4 +157,60 @@ public class MyBot extends TelegramLongPollingBot {
             e.printStackTrace();
         }
     }
+
+    public void copyMessage(Long chatId, Long fromChatId, Integer messageId) {
+        CopyMessage copyMessage = new CopyMessage();
+        copyMessage.setChatId(chatId.toString());
+        copyMessage.setFromChatId(fromChatId.toString());
+        copyMessage.setMessageId(messageId);
+
+        try {
+            execute(copyMessage);
+        } catch (TelegramApiException e) {
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Отправляет фото из файла на диске с подписью
+     */
+    public int sendPhoto(Long chatId, File photoFile, String caption) {
+        try {
+            SendPhoto sendPhoto = new SendPhoto();
+            sendPhoto.setChatId(chatId.toString());
+            sendPhoto.setPhoto(new InputFile(photoFile));
+
+            if (caption != null && !caption.trim().isEmpty()) {
+                sendPhoto.setCaption(caption);
+            }
+
+            Message sentMessage = execute(sendPhoto);
+            return sentMessage.getMessageId();
+        } catch (TelegramApiException e) {
+            e.printStackTrace();
+            return -1;
+        }
+    }
+
+    /**
+     * Отправляет фото по URL с подписью
+     */
+    public int sendPhotoFromUrl(Long chatId, String photoUrl, String caption) {
+        try {
+            SendPhoto sendPhoto = new SendPhoto();
+            sendPhoto.setChatId(chatId.toString());
+            sendPhoto.setPhoto(new InputFile(photoUrl));
+
+            if (caption != null && !caption.trim().isEmpty()) {
+                sendPhoto.setCaption(caption);
+            }
+
+            Message sentMessage = execute(sendPhoto);
+            return sentMessage.getMessageId();
+        } catch (TelegramApiException e) {
+            e.printStackTrace();
+            return -1;
+        }
+    }
+
 }

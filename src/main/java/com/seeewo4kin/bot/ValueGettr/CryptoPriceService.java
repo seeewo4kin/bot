@@ -35,15 +35,15 @@ public class CryptoPriceService {
             "USDT", "USDTUSDT"
     );
 
-    // Fallback rates
+    // Актуальные fallback rates на 2025 год
     private static final Map<String, Map<String, BigDecimal>> FALLBACK_RATES = Map.of(
-            "BTC", Map.of("USD",  BigDecimal.valueOf(45000.0), "RUB", BigDecimal.valueOf(4000000.0), "EUR", BigDecimal.valueOf(41000.0)),
-            "ETH", Map.of("USD", BigDecimal.valueOf(3000.0), "RUB", BigDecimal.valueOf(270000.0), "EUR", BigDecimal.valueOf(2700.0)),
-            "XMR", Map.of("USD", BigDecimal.valueOf(150.0), "RUB", BigDecimal.valueOf(13500.0), "EUR", BigDecimal.valueOf(140.0)),
-            "LTC", Map.of("USD", BigDecimal.valueOf(75.0), "RUB", BigDecimal.valueOf(6800.0), "EUR", BigDecimal.valueOf(70.0)),
-            "USDT", Map.of("USD", BigDecimal.valueOf(1.0), "RUB", BigDecimal.valueOf(92.0), "EUR", BigDecimal.valueOf(0.92)),
-            "USDC", Map.of("USD", BigDecimal.valueOf(1.0), "RUB", BigDecimal.valueOf(92.0), "EUR", BigDecimal.valueOf(0.92)),
-            "COUPONS", Map.of("USD", BigDecimal.valueOf(1.0), "RUB", BigDecimal.valueOf(92.0), "EUR", BigDecimal.valueOf(0.92))
+            "BTC", Map.of("USD", BigDecimal.valueOf(95000.0), "RUB", BigDecimal.valueOf(8500000.0), "EUR", BigDecimal.valueOf(88000.0)),
+            "ETH", Map.of("USD", BigDecimal.valueOf(3200.0), "RUB", BigDecimal.valueOf(290000.0), "EUR", BigDecimal.valueOf(2900.0)),
+            "XMR", Map.of("USD", BigDecimal.valueOf(180.0), "RUB", BigDecimal.valueOf(16000.0), "EUR", BigDecimal.valueOf(165.0)),
+            "LTC", Map.of("USD", BigDecimal.valueOf(85.0), "RUB", BigDecimal.valueOf(7600.0), "EUR", BigDecimal.valueOf(78.0)),
+            "USDT", Map.of("USD", BigDecimal.valueOf(1.0), "RUB", BigDecimal.valueOf(89.0), "EUR", BigDecimal.valueOf(0.92)),
+            "USDC", Map.of("USD", BigDecimal.valueOf(1.0), "RUB", BigDecimal.valueOf(89.0), "EUR", BigDecimal.valueOf(0.92)),
+            "COUPONS", Map.of("USD", BigDecimal.valueOf(1.0), "RUB", BigDecimal.valueOf(89.0), "EUR", BigDecimal.valueOf(0.92))
     );
 
     public CryptoPriceService() {
@@ -62,7 +62,7 @@ public class CryptoPriceService {
             updatePriceAsync("BTC");
             updatePriceAsync("ETH");
             updatePriceAsync("XMR");
-            updatePriceAsync("LTC"); // ← LTC ОБНОВЛЯЕТСЯ ЗДЕСЬ
+            updatePriceAsync("LTC");
             updatePriceAsync("USDT");
 
             updateFiatRates();
@@ -150,20 +150,9 @@ public class CryptoPriceService {
      * Обновление курсов фиатных валют
      */
     private void updateFiatRates() {
-        scheduler.execute(() -> {
-            try {
-                // Используем ЦБ РФ или другие источники для курсов
-                // Для примера, можно использовать CoinGecko для фиатных пар или другие API
-                updateUsdToRubRate();
-                updateUsdToEurRate();
-
-            } catch (Exception e) {
-                System.err.println("Error updating fiat rates: " + e.getMessage());
-                // Используем fallback значения
-                priceCache.put("USD_RUB", BigDecimal.valueOf(92.0));
-                priceCache.put("USD_EUR", BigDecimal.valueOf(0.92));
-            }
-        });
+        // Обновляем курсы фиатных валют синхронно
+        updateUsdToRubRate();
+        updateUsdToEurRate();
     }
 
     /**
@@ -184,9 +173,8 @@ public class CryptoPriceService {
                 updateAllPricesInRub(usdRate);
             }
         } catch (Exception e) {
-            // Fallback значение
-            priceCache.put("USD_RUB", BigDecimal.valueOf(92.0));
-            System.err.println("Error updating USD/RUB rate: " + e.getMessage());
+            // Fallback значение (актуальный курс на 2025)
+            priceCache.put("USD_RUB", BigDecimal.valueOf(89.0));
         }
     }
 
@@ -194,24 +182,26 @@ public class CryptoPriceService {
      * Обновление курса USD/EUR
      */
     private void updateUsdToEurRate() {
+        BigDecimal eurRate = BigDecimal.valueOf(0.863); // Фиксированное актуальное значение на 2025
+
         try {
-            // Используем ECB API или другие источники
-            String url = "https://api.exchangerate.host/latest?base=USD&symbols=EUR";
+            // Пробуем получить актуальный курс
+            String url = "https://api.exchangerate-api.com/v4/latest/USD";
             String response = restTemplate.getForObject(url, String.class);
             JsonNode root = objectMapper.readTree(response);
 
-            BigDecimal eurRate = BigDecimal.valueOf(root.path("rates").path("EUR").asDouble());
-            if (eurRate != null && eurRate.compareTo(BigDecimal.ZERO) == 1) {
-                priceCache.put("USD_EUR", eurRate);
-
-                // Обновляем все цены в EUR
-                updateAllPricesInEur(eurRate);
+            BigDecimal apiRate = BigDecimal.valueOf(root.path("rates").path("EUR").asDouble());
+            if (apiRate != null && apiRate.compareTo(BigDecimal.ZERO) == 1) {
+                eurRate = apiRate;
             }
         } catch (Exception e) {
-            // Fallback значение
-            priceCache.put("USD_EUR", BigDecimal.valueOf(0.92));
-            System.err.println("Error updating USD/EUR rate: " + e.getMessage());
+            System.err.println("Error updating USD/EUR rate, using fallback: " + e.getMessage());
         }
+
+        // Всегда устанавливаем значение
+        priceCache.put("USD_EUR", eurRate);
+        // Обновляем все цены в EUR
+        updateAllPricesInEur(eurRate);
     }
 
     /**
@@ -292,6 +282,107 @@ public class CryptoPriceService {
      */
     public void forcePriceUpdate() {
         updateAllPrices();
+    }
+
+    /**
+     * Синхронное обновление цен для конкретной криптовалюты
+     */
+    public BigDecimal getFreshPrice(String cryptoCurrency, String fiatCurrency) {
+        try {
+            // Пробуем обновить цену синхронно
+            updatePriceSync(cryptoCurrency);
+            // Обновляем фиатные курсы
+            updateFiatRatesSync();
+
+            // Возвращаем свежую цену
+            return getCurrentPrice(cryptoCurrency, fiatCurrency);
+        } catch (Exception e) {
+            // Если обновление не удалось, возвращаем текущую цену из кэша
+            return getCurrentPrice(cryptoCurrency, fiatCurrency);
+        }
+    }
+
+    /**
+     * Синхронное обновление цены для конкретной криптовалюты
+     */
+    private void updatePriceSync(String crypto) {
+        try {
+            if ("USDT".equals(crypto) || "USDC".equals(crypto)) {
+                Map<String, BigDecimal> prices = new HashMap<>();
+                prices.put("USD", BigDecimal.ONE);
+                BigDecimal usdToRub = priceCache.get("USD_RUB");
+                BigDecimal usdToEur = priceCache.get("USD_EUR");
+
+                if (usdToRub != null) {
+                    prices.put("RUB", BigDecimal.ONE.multiply(usdToRub));
+                    priceCache.put(crypto + "_RUB", BigDecimal.ONE.multiply(usdToRub));
+                }
+                if (usdToEur != null) {
+                    prices.put("EUR", BigDecimal.ONE.multiply(usdToEur));
+                    priceCache.put(crypto + "_EUR", BigDecimal.ONE.multiply(usdToEur));
+                }
+
+                priceCache.put(crypto + "_USD", BigDecimal.ONE);
+                multiplePriceCache.put(crypto, prices);
+                return;
+            }
+
+            String symbol = BINANCE_SYMBOLS.get(crypto);
+            if (symbol != null) {
+                BigDecimal usdPrice = getPriceFromBinance(symbol);
+                if (usdPrice != null && usdPrice.compareTo(BigDecimal.ZERO) == 1) {
+                    Map<String, BigDecimal> prices = new HashMap<>();
+                    prices.put("USD", usdPrice);
+                    BigDecimal usdToRub = priceCache.get("USD_RUB");
+                    BigDecimal usdToEur = priceCache.get("USD_EUR");
+
+                    if (usdToRub != null) {
+                        prices.put("RUB", usdPrice.multiply(usdToRub));
+                    }
+                    if (usdToEur != null) {
+                        prices.put("EUR", usdPrice.multiply(usdToEur));
+                    }
+
+                    multiplePriceCache.put(crypto, prices);
+
+                    // Обновляем отдельные цены в кэше
+                    priceCache.put(crypto + "_USD", usdPrice);
+                    if (usdToRub != null) {
+                        priceCache.put(crypto + "_RUB", usdPrice.multiply(usdToRub));
+                    }
+                    if (usdToEur != null) {
+                        priceCache.put(crypto + "_EUR", usdPrice.multiply(usdToEur));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error updating price for " + crypto + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Синхронное обновление фиатных курсов
+     */
+    private void updateFiatRatesSync() {
+        // Гарантируем установку базовых курсов
+        if (priceCache.get("USD_RUB") == null) {
+            priceCache.put("USD_RUB", BigDecimal.valueOf(89.0));
+        }
+        if (priceCache.get("USD_EUR") == null) {
+            priceCache.put("USD_EUR", BigDecimal.valueOf(0.863));
+        }
+
+        updateUsdToRubRate();
+        updateUsdToEurRate();
+    }
+
+    /**
+     * Метод для принудительного обновления курса EUR (для тестирования)
+     */
+    public void forceEurUpdate() {
+        System.out.println("FORCE EUR UPDATE DEBUG: Starting EUR update");
+        updateUsdToEurRate();
+        System.out.println("FORCE EUR UPDATE DEBUG: EUR update completed");
     }
 
     /**

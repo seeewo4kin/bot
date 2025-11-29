@@ -3,7 +3,10 @@ package com.seeewo4kin.bot.Bot;
 import com.seeewo4kin.bot.Config.AdminConfig;
 import com.seeewo4kin.bot.Config.CommissionConfig;
 import com.seeewo4kin.bot.Entity.*;
+import com.seeewo4kin.bot.Entity.ReferralStatsEmbedded;
 import com.seeewo4kin.bot.Enums.ApplicationStatus;
+import com.seeewo4kin.bot.service.ReferralService;
+import com.seeewo4kin.bot.Enums.CryptoCurrency;
 import com.seeewo4kin.bot.Enums.UserState;
 import com.seeewo4kin.bot.Enums.ValueType;
 import com.seeewo4kin.bot.ValueGettr.CryptoPriceService;
@@ -36,11 +39,18 @@ public class MessageProcessor {
     private final CommissionService commissionService;
     private final ReferralService referralService;
     private final CommissionConfig commissionConfig;
+    private final Map<Long, Integer> adminAllApplicationsPage = new ConcurrentHashMap<>();
+    private final Map<Long, Integer> adminActiveApplicationsPage = new ConcurrentHashMap<>();
+    private final Map<Long, Integer> adminAllUsersPage = new ConcurrentHashMap<>();
+    private final Map<Long, String> adminCurrentFilter = new ConcurrentHashMap<>();
 
     private static final BigDecimal VIP_COST = new BigDecimal("300");
     private final Map<Long, Application> temporaryApplications = new ConcurrentHashMap<>();
     private final Map<Long, String> currentOperation = new ConcurrentHashMap<>();
     private final Map<Long, Integer> lastMessageId = new ConcurrentHashMap<>();
+    private final Map<Long, Integer> welcomePhotoId = new ConcurrentHashMap<>();
+    private final Map<Long, List<Integer>> chatMessageHistory = new ConcurrentHashMap<>();
+    private final Map<Long, Integer> firstWelcomeMessageId = new ConcurrentHashMap<>();
     private final Map<Long, Long> selectedApplication = new ConcurrentHashMap<>();
 
     public MessageProcessor(UserService userService,
@@ -71,6 +81,19 @@ public class MessageProcessor {
     private String formatBtcAmount(BigDecimal amount) {
         if (amount == null) return "0.00000000 BTC";
         return String.format("%.8f BTC", amount).replace(",", ".");
+    }
+
+    private String formatCryptoAmount(BigDecimal amount, CryptoCurrency crypto) {
+        switch (crypto) {
+            case BTC:
+                return formatBtcAmount(amount);
+            case LTC:
+                return String.format("%.8f Ł", amount).replace(",", ".");
+            case XMR:
+                return String.format("%.12f ɱ", amount).replace(",", ".");
+            default:
+                return formatBtcAmount(amount);
+        }
     }
 
     private String formatDouble(BigDecimal value) {
@@ -124,6 +147,46 @@ public class MessageProcessor {
         }
     }
 
+    /**
+     * Очищает весь чат кроме заявок и первого приветственного сообщения
+     */
+    private void clearChatExceptApplications(Long chatId, MyBot bot) {
+        List<Integer> messageHistory = chatMessageHistory.get(chatId);
+        Integer firstMessageId = firstWelcomeMessageId.get(chatId);
+
+        if (messageHistory != null) {
+            // Удаляем все сообщения из истории, кроме первого приветственного
+            for (Integer messageId : messageHistory) {
+                if (firstMessageId == null || !messageId.equals(firstMessageId)) {
+                    try {
+                        bot.deleteMessage(chatId, messageId);
+                    } catch (Exception e) {
+                        // Игнорируем ошибки удаления
+                    }
+                }
+            }
+            messageHistory.clear();
+            // Восстанавливаем ID первого сообщения в истории
+            if (firstMessageId != null) {
+                messageHistory.add(firstMessageId);
+            }
+        }
+
+        // Очищаем остальные ID, но сохраняем первое приветственное сообщение
+        lastMessageId.remove(chatId);
+        welcomePhotoId.remove(chatId);
+        // НЕ удаляем firstWelcomeMessageId, чтобы первое сообщение оставалось
+    }
+
+    /**
+     * Добавляет сообщение в историю чата для последующего удаления
+     */
+    private void addMessageToHistory(Long chatId, Integer messageId) {
+        if (messageId != null && messageId > 0) {
+            chatMessageHistory.computeIfAbsent(chatId, k -> new ArrayList<>()).add(messageId);
+        }
+    }
+
     private void processTextMessage(Update update, MyBot bot) {
         String text = update.getMessage().getText();
         Long chatId = update.getMessage().getChatId();
@@ -132,6 +195,12 @@ public class MessageProcessor {
         bot.deleteMessage(chatId, update.getMessage().getMessageId());
 
         User user = userService.findByTelegramId(telegramId);
+
+        // Обработка команды /start в любом состоянии
+        if ("/start".equals(text)) {
+            processStartCommand(update, bot);
+            return;
+        }
 
         if (text.equalsIgnoreCase("отмена") || text.equalsIgnoreCase("cancel") ||
                 text.equals("/cancel") || text.equals("💎 Главное меню")) {
@@ -169,15 +238,13 @@ public class MessageProcessor {
         deletePreviousBotMessage(chatId, bot);
 
         switch (user.getState()) {
-
             case ADMIN_MY_APPLICATIONS:
                 user.setState(UserState.ADMIN_MAIN_MENU);
                 userService.update(user);
                 showAdminMainMenu(chatId, bot);
                 break;
+
             // Основные меню возвращают в главное меню
-            case BUY_MENU:
-            case SELL_MENU:
             case OTHER_MENU:
             case REFERRAL_MENU:
             case ADMIN_MAIN_MENU:
@@ -185,18 +252,34 @@ public class MessageProcessor {
                 break;
 
             // Ввод суммы возвращает в соответствующее меню
-            case ENTERING_BUY_AMOUNT_RUB:
-            case ENTERING_BUY_AMOUNT_BTC:
-                user.setState(UserState.BUY_MENU);
+            case ENTERING_BUY_AMOUNT_RUB_BTC:
+            case ENTERING_BUY_AMOUNT_RUB_LTC:
+            case ENTERING_BUY_AMOUNT_RUB_XMR:
+                System.out.println("DEBUG: Back from crypto RUB amount input to input method");
+                user.setState(UserState.CHOOSING_INPUT_METHOD);
                 userService.update(user);
-                showBuyMenu(chatId, bot);
+
+                // Получаем криптовалюту из currentOperation
+                String currentOp = currentOperation.get(user.getId());
+                CryptoCurrency crypto = getCryptoFromOperation(currentOp);
+                showInputMethodMenu(chatId, user, crypto, bot);
                 break;
 
-            case ENTERING_SELL_AMOUNT:
-                user.setState(UserState.SELL_MENU);
+            case ENTERING_BUY_AMOUNT_BTC:
+            case ENTERING_BUY_AMOUNT_LTC:
+            case ENTERING_BUY_AMOUNT_XMR:
+                System.out.println("DEBUG: Back from crypto amount input to input method");
+                user.setState(UserState.CHOOSING_INPUT_METHOD);
                 userService.update(user);
-                showSellMenu(chatId, bot);
+
+                // Получаем криптовалюту из currentOperation
+                String currentOpCrypto = currentOperation.get(user.getId());
+                CryptoCurrency cryptoCrypto = getCryptoFromOperation(currentOpCrypto);
+                showInputMethodMenu(chatId, user, cryptoCrypto, bot);
                 break;
+
+
+
 
             case VIEWING_REFERRAL_TERMS:
                 user.setState(UserState.REFERRAL_MENU);
@@ -215,13 +298,12 @@ public class MessageProcessor {
 
             // Применение купонов возвращает на предыдущий шаг
             case APPLYING_COUPON:
-                if ("BUY_RUB".equals(currentOperation.get(user.getId())) ||
-                        "BUY_BTC".equals(currentOperation.get(user.getId()))) {
+                String currentOpp = currentOperation.get(user.getId());
+                if (currentOpp != null && (currentOpp.contains("BUY"))) {
                     user.setState(UserState.BUY_MENU);
                     showBuyMenu(chatId, bot);
                 } else {
-                    user.setState(UserState.SELL_MENU);
-                    showSellMenu(chatId, bot);
+                    processMainMenu(chatId, user, bot);
                 }
                 break;
 
@@ -237,21 +319,50 @@ public class MessageProcessor {
             case CONFIRMING_VIP:
                 user.setState(UserState.ENTERING_WALLET);
                 userService.update(user);
-                showWalletInput(chatId, bot);
+                showWalletInput(chatId, bot, user);
                 break;
 
             case ENTERING_WALLET:
-                // Определяем, из какого меню пришли
-                Application app = temporaryApplications.get(user.getId());
-                if (app != null) {
-                    if (app.getUserValueGetType() == ValueType.BTC) {
-                        user.setState(UserState.BUY_MENU);
-                        showBuyMenu(chatId, bot);
-                    } else {
-                        user.setState(UserState.SELL_MENU);
-                        showSellMenu(chatId, bot);
+                System.out.println("DEBUG: Back from wallet input to amount input");
+
+                Application application1 = temporaryApplications.get(user.getId());
+                if (application1 != null) {
+                    // Определяем, откуда пришли - из покупки или продажи по currentOperation
+                    String currentOpWallet = currentOperation.get(user.getId());
+                    boolean isBuy = currentOpWallet != null && currentOpWallet.contains("BUY");
+
+                    CryptoCurrency crypto1 = application1.getCryptoCurrency();
+
+                    if (isBuy) {
+                        // Для покупки возвращаем к вводу суммы в зависимости от выбранного способа
+                        if (currentOpWallet.contains("_RUB")) {
+                            // Ввод в RUB
+                            if (crypto1 == CryptoCurrency.BTC) {
+                                user.setState(UserState.ENTERING_BUY_AMOUNT_RUB_BTC);
+                            } else if (crypto1 == CryptoCurrency.LTC) {
+                                user.setState(UserState.ENTERING_BUY_AMOUNT_RUB_LTC);
+                            } else if (crypto1 == CryptoCurrency.XMR) {
+                                user.setState(UserState.ENTERING_BUY_AMOUNT_RUB_XMR);
+                            }
+                            userService.update(user);
+                            // Показываем меню ввода суммы в рублях
+                            showEnterAmountRubMenu(chatId, user, crypto1, bot);
+                        } else {
+                            // Ввод в крипте
+                            if (crypto1 == CryptoCurrency.BTC) {
+                                user.setState(UserState.ENTERING_BUY_AMOUNT_BTC);
+                            } else if (crypto1 == CryptoCurrency.LTC) {
+                                user.setState(UserState.ENTERING_BUY_AMOUNT_LTC);
+                            } else if (crypto1 == CryptoCurrency.XMR) {
+                                user.setState(UserState.ENTERING_BUY_AMOUNT_XMR);
+                            }
+                            userService.update(user);
+                            // Показываем меню ввода суммы
+                            showEnterAmountMenu(chatId, user, crypto1, bot);
+                        }
                     }
                 } else {
+                    // Если заявка не найдена, возвращаем в главное меню
                     processMainMenu(chatId, user, bot);
                 }
                 break;
@@ -280,9 +391,24 @@ public class MessageProcessor {
                 userService.update(user);
                 processAdminViewingAllApplications(chatId, user, bot);
                 break;
+            case CHOOSING_INPUT_METHOD:
+                System.out.println("DEBUG: Back from input method to buy menu");
+                user.setState(UserState.BUY_MENU);
+                userService.update(user);
+                showBuyMenu(chatId, bot);
+                break;
+
+            case BUY_MENU:
+                System.out.println("DEBUG: Back from buy menu to main menu");
+                processMainMenu(chatId, user, bot);
+                break;
 
             case ADMIN_VIEW_USER_DETAILS:
             case ADMIN_CREATE_COUPON:
+            case ADMIN_USERS_MENU:
+            case ADMIN_VIEW_ALL_USERS:
+            case ADMIN_VIEW_RECENT_USERS:
+            case ADMIN_USERS_SEARCH_USER:
                 user.setState(UserState.ADMIN_MAIN_MENU);
                 userService.update(user);
                 showAdminMainMenu(chatId, bot);
@@ -310,7 +436,6 @@ public class MessageProcessor {
                 break;
 
             case CALCULATOR_BUY:
-            case CALCULATOR_SELL:
                 user.setState(UserState.CALCULATOR_MENU);
                 userService.update(user);
                 showCalculatorMenu(chatId, user, bot);
@@ -321,12 +446,31 @@ public class MessageProcessor {
                 processMainMenu(chatId, user, bot);
         }
     }
-    private void showWalletInput(Long chatId, MyBot bot) {
-        String message = "🔐 Введите адрес Bitcoin-кошелька:";
-        InlineKeyboardMarkup inlineKeyboard = createBackAndMainMenuKeyboard();
-        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
+    private void showWalletInput(Long chatId, MyBot bot, User user) {
+        Application application = temporaryApplications.get(user.getId());
+        if (application == null) {
+            processMainMenu(chatId, user, bot);
+            return;
+        }
+
+        boolean isBuy = application.getUserValueGiveType() == ValueType.RUB;
+        CryptoCurrency crypto = application.getCryptoCurrencySafe();
+
+        String message = getWalletMessage(crypto, isBuy);
+
+        // Добавляем информацию о том, куда вернется пользователь при нажатии "Назад"
+        String backInfo = isBuy ?
+                "\n\n◀️ Назад: к вводу количества " + crypto.getDisplayName() :
+                "\n\n◀️ Назад: к вводу количества " + crypto.getDisplayName();
+
+        message += backInfo;
+
+        InlineKeyboardMarkup keyboard = createBackInlineKeyboard();
+        int messageId = bot.sendMessageWithKeyboard(chatId, message, keyboard);
         lastMessageId.put(chatId, messageId);
     }
+
+
 
     private void processCommand(Update update, MyBot bot) {
         String text = update.getMessage().getText();
@@ -336,10 +480,15 @@ public class MessageProcessor {
         User user = userService.findByTelegramId(telegramId);
         if (user == null) {
             user = userService.findOrCreateUser(update.getMessage().getFrom());
+            // Отправляем уведомление админам о новом пользователе
+            sendNewUserNotificationToAdmins(user, bot);
         }
 
+        // Команда /start уже обработана в processTextMessage, поэтому здесь просто показываем главное меню
         if ("/start".equals(text)) {
-            processStartCommand(update, bot);
+            user.setState(UserState.MAIN_MENU);
+            userService.update(user);
+            showMainMenu(chatId, user, bot);
         } else {
             // Если пользователь отправил неизвестную команду, показываем главное меню
             user.setState(UserState.MAIN_MENU);
@@ -347,6 +496,24 @@ public class MessageProcessor {
             showMainMenu(chatId, user, bot);
         }
     }
+    private CryptoCurrency getCryptoFromOperation(String operation) {
+        if (operation == null) {
+            System.out.println("ERROR: Operation is null, defaulting to BTC");
+            return CryptoCurrency.BTC;
+        }
+
+        // Для операций покупки в рублях
+        if (operation.contains("BUY_BTC_RUB") || operation.contains("BUY_BTC")) return CryptoCurrency.BTC;
+        if (operation.contains("BUY_LTC_RUB") || operation.contains("BUY_LTC")) return CryptoCurrency.LTC;
+        if (operation.contains("BUY_XMR_RUB") || operation.contains("BUY_XMR")) return CryptoCurrency.XMR;
+
+        System.out.println("WARNING: Unknown crypto in operation: " + operation + ", defaulting to BTC");
+        return CryptoCurrency.BTC;
+    }
+
+
+
+
 
 
 
@@ -354,188 +521,356 @@ public class MessageProcessor {
         Long chatId = update.getMessage().getChatId();
         String text = update.getMessage().getText();
 
-        switch (user.getState()) {
-
-            case START:
-            case CAPTCHA_CHECK:
-                break;
-            case MAIN_MENU:
-                processMainMenuCommand(chatId, user, text, bot);
-                break;
-
-            case ADMIN_VIEW_COUPONS:
-                processAdminViewCoupons(chatId, user, text, bot);
-                break;
-
-            case ADMIN_CREATE_COUPON_ADVANCED:
-                processAdminCreateCouponAdvanced(chatId, user, text, bot);
-                break;
-            case BUY_MENU:
-                processBuyMenu(chatId, user, text, bot);
-                break;
-            case SELL_MENU:
-                processSellMenu(chatId, user, text, bot);
-                break;
-
-            case ENTERING_BUY_AMOUNT_RUB:
-                processEnteringBuyAmountRub(chatId, user, text, bot);
-                break;
-            case ENTERING_BUY_AMOUNT_BTC:
-                processEnteringBuyAmountBtc(chatId, user, text, bot);
-                break;
-            case ENTERING_SELL_AMOUNT:
-                processEnteringSellAmount(chatId, user, text, bot);
-                break;
-            case CONFIRMING_APPLICATION:
-                processConfirmingApplication(chatId, user, text, bot);
-                break;
-            case APPLYING_COUPON:
-                processApplyingCoupon(chatId, user, text, bot);
-                break;
-            case APPLYING_COUPON_FINAL:
-                processApplyingCouponFinal(chatId, user, text, bot);
-                break;
-            case VIEWING_APPLICATIONS:
-                processViewingApplications(chatId, user, bot);
-                break;
-            case VIEWING_COUPONS:
-                processViewingCoupons(chatId, user, bot);
-                break;
-            case REFERRAL_MENU:
-                processReferralMenu(chatId, user, text, bot);
-                break;
-            case CREATING_REFERRAL_CODE:
-                processCreatingReferralCode(chatId, user, text, bot);
-                break;
-            case ENTERING_REFERRAL_CODE:
-                processEnteringReferralCode(chatId, user, text, bot);
-                break;
-            case OTHER_MENU:
-                processOtherMenu(chatId, user, text, bot);
-                break;
-            case CALCULATOR_MENU:
-                processCalculatorMenu(chatId, user, text, bot);
-                break;
-            case CALCULATOR_BUY:
-                processCalculatorBuy(chatId, user, text, bot);
-                break;
-            case CALCULATOR_SELL:
-                processCalculatorSell(chatId, user, text, bot);
-                break;
-            case CONFIRMING_VIP:
-                processVipConfirmation(chatId, user, text, bot);
-                break;
-            case ENTERING_WALLET:
-                processEnteringWallet(chatId, user, text, bot);
-                break;
-            case ADMIN_MY_APPLICATIONS:
-                processAdminMyApplicationsSelection(chatId, user, text, bot);
-                break;
-
-            case ADMIN_MANAGE_BONUS_BALANCE:
-                processAdminBonusBalanceManagement(chatId, user, text, bot);
-                break;
-
-            case USING_BONUS_BALANCE:
-                processBonusUsageText(chatId, user, text, bot);
-                break;
-
-            // Админские состояния
-            case ADMIN_MAIN_MENU:
-                processAdminMainMenu(chatId, user, text, bot);
-                break;
-            case ADMIN_VIEW_ALL_APPLICATIONS:
-                if (text.equals("🔙 Назад")) {
-                    user.setState(UserState.ADMIN_MAIN_MENU);
-                    userService.update(user);
-                    showAdminMainMenu(chatId, bot);
-                } else if (text.equals("📊 Активные")) {
-                    user.setState(UserState.ADMIN_VIEW_ACTIVE_APPLICATIONS);
-                    userService.update(user);
-                    showActiveApplications(chatId, user, bot);
-                } else if (text.equals("⏭️ Следующая")) {
-                    processNextApplication(chatId, user, bot);
-                } else {
-                    showAllApplications(chatId, user, bot);
-                }
-                break;
-            case ADMIN_VIEW_ACTIVE_APPLICATIONS:
-                if (text.equals("🔙 Назад")) {
-                    user.setState(UserState.ADMIN_MAIN_MENU);
-                    userService.update(user);
-                    showAdminMainMenu(chatId, bot);
-                } else {
-                    processAdminActiveApplicationsSelection(chatId, user, text, bot);
-                }
-                break;
-            case ADMIN_VIEWING_ALL_APPLICATIONS:
-                processAdminApplicationSelection(chatId, user, text, bot);
-                break;
-            case ADMIN_VIEWING_APPLICATION_DETAILS:
-                processAdminApplicationActions(chatId, user, text, bot);
-                break;
-            case ADMIN_COMMISSION_SETTINGS:
-                processAdminCommissionSettings(chatId, user, text, bot);
-                break;
-            case ADMIN_VIEW_USER_DETAILS:
-                processAdminUserSearch(chatId, user, text, bot);
-                break;
-            case ADMIN_CREATE_COUPON:
-                processCreateCoupon(chatId, user, text, bot);
-                break;
-        }
-    }
-
-    private void processCalculatorSell(Long chatId, User user, String text, MyBot bot) {
-        if (text.equals("🔙 Назад")) {
-            user.setState(UserState.CALCULATOR_MENU);
-            userService.update(user);
-            showCalculatorMenu(chatId, user, bot);
-            return;
-        }
+        System.out.println("=== PROCESS_USER_STATE START ===");
+        System.out.println("User ID: " + user.getId());
+        System.out.println("Current State: " + user.getState());
+        System.out.println("Input Text: " + text);
+        System.out.println("Chat ID: " + chatId);
+        System.out.println("Current Operation: " + currentOperation.get(user.getId()));
+        System.out.println("Temporary App: " + (temporaryApplications.containsKey(user.getId()) ? "EXISTS" : "NULL"));
 
         try {
-            BigDecimal btcAmount = toBigDecimal(text);
+            switch (user.getState()) {
+                case START:
+                    System.out.println("DEBUG: START state");
+                    break;
+                case CAPTCHA_CHECK:
+                    System.out.println("DEBUG: CAPTCHA_CHECK state");
+                    break;
+                case MAIN_MENU:
+                    System.out.println("DEBUG: MAIN_MENU state - processing command");
+                    processMainMenuCommand(chatId, user, text, bot);
+                    break;
 
-            if (btcAmount.compareTo(BigDecimal.ZERO) <= 0) {
-                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                        "❌ Количество должно быть больше 0", createCalculatorMenuInlineKeyboard()));
-                return;
+                case ADMIN_VIEW_COUPONS:
+                    System.out.println("DEBUG: ADMIN_VIEW_COUPONS state");
+                    processAdminViewCoupons(chatId, user, text, bot);
+                    break;
+
+                case ADMIN_CREATE_COUPON_ADVANCED:
+                    System.out.println("DEBUG: ADMIN_CREATE_COUPON_ADVANCED state");
+                    processAdminCreateCouponAdvanced(chatId, user, text, bot);
+                    break;
+
+                // ========== СОСТОЯНИЯ ВВОДА СУММЫ ПОКУПКИ ==========
+                case ENTERING_BUY_AMOUNT_RUB:
+                    System.out.println("DEBUG: ENTERING_BUY_AMOUNT_RUB state");
+                    processEnteringBuyAmountRub(chatId, user, text, bot);
+                    break;
+
+                case ENTERING_BUY_AMOUNT_RUB_BTC:
+                    System.out.println("DEBUG: ENTERING_BUY_AMOUNT_RUB_BTC state");
+                    processEnteringBuyAmountRubForCrypto(chatId, user, text, bot, CryptoCurrency.BTC);
+                    break;
+
+                case ENTERING_BUY_AMOUNT_RUB_LTC:
+                    System.out.println("DEBUG: ENTERING_BUY_AMOUNT_RUB_LTC state");
+                    processEnteringBuyAmountRubForCrypto(chatId, user, text, bot, CryptoCurrency.LTC);
+                    break;
+
+                case ENTERING_BUY_AMOUNT_RUB_XMR:
+                    System.out.println("DEBUG: ENTERING_BUY_AMOUNT_RUB_XMR state");
+                    processEnteringBuyAmountRubForCrypto(chatId, user, text, bot, CryptoCurrency.XMR);
+                    break;
+
+                case CHOOSING_INPUT_METHOD:
+                    System.out.println("DEBUG: Back from input method to buy menu");
+                    user.setState(UserState.BUY_MENU);
+                    userService.update(user);
+                    showBuyMenu(chatId, bot);
+                    break;
+
+                case BUY_MENU:
+                    System.out.println("DEBUG: Back from buy menu to main menu");
+                    processMainMenu(chatId, user, bot);
+                    break;
+
+                // ========== СОСТОЯНИЯ ВВОДА КРИПТОВАЛЮТЫ ==========
+                case ENTERING_BUY_AMOUNT_BTC:
+                    System.out.println("DEBUG: ENTERING_BUY_AMOUNT_BTC state");
+                    processEnteringBuyAmountCrypto(chatId, user, text, bot, CryptoCurrency.BTC);
+                    break;
+
+                case ENTERING_BUY_AMOUNT_LTC:
+                    System.out.println("DEBUG: ENTERING_BUY_AMOUNT_LTC state");
+                    processEnteringBuyAmountCrypto(chatId, user, text, bot, CryptoCurrency.LTC);
+                    break;
+
+                case ENTERING_BUY_AMOUNT_XMR:
+                    System.out.println("DEBUG: ENTERING_BUY_AMOUNT_XMR state");
+                    processEnteringBuyAmountCrypto(chatId, user, text, bot, CryptoCurrency.XMR);
+                    break;
+
+                // ========== СОСТОЯНИЯ ПОДТВЕРЖДЕНИЯ ЗАЯВКИ ==========
+                case CONFIRMING_APPLICATION:
+                    System.out.println("DEBUG: CONFIRMING_APPLICATION state");
+                    processConfirmingApplication(chatId, user, text, bot);
+                    break;
+
+                case APPLYING_COUPON:
+                    System.out.println("DEBUG: APPLYING_COUPON state");
+                    processApplyingCoupon(chatId, user, text, bot);
+                    break;
+
+                case APPLYING_COUPON_FINAL:
+                    System.out.println("DEBUG: APPLYING_COUPON_FINAL state");
+                    processApplyingCouponFinal(chatId, user, text, bot);
+                    break;
+
+                case VIEWING_APPLICATIONS:
+                    System.out.println("DEBUG: VIEWING_APPLICATIONS state");
+                    processViewingApplications(chatId, user, bot);
+                    break;
+
+                case VIEWING_COUPONS:
+                    System.out.println("DEBUG: VIEWING_COUPONS state");
+                    processViewingCoupons(chatId, user, bot);
+                    break;
+
+                case REFERRAL_MENU:
+                    System.out.println("DEBUG: REFERRAL_MENU state");
+                    processReferralMenu(chatId, user, text, bot);
+                    break;
+
+                case CREATING_REFERRAL_CODE:
+                    System.out.println("DEBUG: CREATING_REFERRAL_CODE state");
+                    processCreatingReferralCode(chatId, user, text, bot);
+                    break;
+
+                case ENTERING_REFERRAL_CODE:
+                    System.out.println("DEBUG: ENTERING_REFERRAL_CODE state");
+                    processEnteringReferralCode(chatId, user, text, bot);
+                    break;
+
+                case OTHER_MENU:
+                    System.out.println("DEBUG: OTHER_MENU state");
+                    processOtherMenu(chatId, user, text, bot);
+                    break;
+
+                case CALCULATOR_MENU:
+                    System.out.println("DEBUG: CALCULATOR_MENU state");
+                    processCalculatorMenu(chatId, user, text, bot);
+                    break;
+
+                case CALCULATOR_BUY:
+                    System.out.println("DEBUG: CALCULATOR_BUY state");
+                    processCalculatorBuy(chatId, user, text, bot);
+                    break;
+
+
+                case CONFIRMING_VIP:
+                    System.out.println("DEBUG: CONFIRMING_VIP state");
+                    processVipConfirmation(chatId, user, text, bot);
+                    break;
+
+                case ENTERING_WALLET:
+                    System.out.println("DEBUG: ENTERING_WALLET state");
+                    processEnteringWallet(chatId, user, text, bot);
+                    break;
+
+                case USING_BONUS_BALANCE:
+                    System.out.println("DEBUG: USING_BONUS_BALANCE state");
+                    processBonusUsageText(chatId, user, text, bot);
+                    break;
+
+                // ========== АДМИНСКИЕ СОСТОЯНИЯ ==========
+                case ADMIN_MAIN_MENU:
+                    System.out.println("DEBUG: ADMIN_MAIN_MENU state");
+                    processAdminMainMenu(chatId, user, text, bot);
+                    break;
+
+                case ADMIN_VIEW_ALL_APPLICATIONS:
+                    System.out.println("DEBUG: ADMIN_VIEW_ALL_APPLICATIONS state");
+                    if (text.equals("🔙 Назад")) {
+                        user.setState(UserState.ADMIN_MAIN_MENU);
+                        userService.update(user);
+                        showAdminMainMenu(chatId, bot);
+                    } else if (text.equals("📊 Активные")) {
+                        user.setState(UserState.ADMIN_VIEW_ACTIVE_APPLICATIONS);
+                        userService.update(user);
+                        showActiveApplications(chatId, user, bot);
+                    } else if (text.equals("⏭️ Следующая")) {
+                        processNextApplication(chatId, user, bot);
+                    } else {
+                        showAllApplications(chatId, user, bot);
+                    }
+                    break;
+
+                case ADMIN_VIEW_ACTIVE_APPLICATIONS:
+                    System.out.println("DEBUG: ADMIN_VIEW_ACTIVE_APPLICATIONS state");
+                    if (text.equals("🔙 Назад")) {
+                        user.setState(UserState.ADMIN_MAIN_MENU);
+                        userService.update(user);
+                        showAdminMainMenu(chatId, bot);
+                    } else {
+                        processAdminActiveApplicationsSelection(chatId, user, text, bot);
+                    }
+                    break;
+
+                case ADMIN_SEARCH_APPLICATION:
+                    System.out.println("DEBUG: ADMIN_SEARCH_APPLICATION state");
+                    if (text.equals("🔙 Назад")) {
+                        user.setState(UserState.ADMIN_MAIN_MENU);
+                        userService.update(user);
+                        showAdminMainMenu(chatId, bot);
+                    } else {
+                        processAdminApplicationSearch(chatId, user, text, bot);
+                    }
+                    break;
+
+                case ADMIN_BROADCAST_MESSAGE:
+                    System.out.println("DEBUG: ADMIN_BROADCAST_MESSAGE state");
+                    if (text != null && text.equals("🔙 Назад")) {
+                        user.setState(UserState.ADMIN_MAIN_MENU);
+                        userService.update(user);
+                        showAdminMainMenu(chatId, bot);
+                    } else if (update.hasMessage()) {
+                        processBroadcastMessage(chatId, user, update, bot);
+                    }
+                    break;
+
+                case ADMIN_VIEWING_ALL_APPLICATIONS:
+                    System.out.println("DEBUG: ADMIN_VIEWING_ALL_APPLICATIONS state");
+                    processAdminApplicationSelection(chatId, user, text, bot);
+                    break;
+
+                case ADMIN_VIEWING_APPLICATION_DETAILS:
+                    System.out.println("DEBUG: ADMIN_VIEWING_APPLICATION_DETAILS state");
+                    processAdminApplicationActions(chatId, user, text, bot);
+                    break;
+
+                case ADMIN_COMMISSION_SETTINGS:
+                    System.out.println("DEBUG: ADMIN_COMMISSION_SETTINGS state");
+                    processAdminCommissionSettings(chatId, user, text, bot);
+                    break;
+
+                case ADMIN_VIEW_USER_DETAILS:
+                    System.out.println("DEBUG: ADMIN_VIEW_USER_DETAILS state");
+                    processAdminUserSearch(chatId, user, text, bot);
+                    break;
+
+                case ADMIN_CREATE_COUPON:
+                    System.out.println("DEBUG: ADMIN_CREATE_COUPON state");
+                    processCreateCoupon(chatId, user, text, bot);
+                    break;
+
+                case ADMIN_MY_APPLICATIONS:
+                    System.out.println("DEBUG: ADMIN_MY_APPLICATIONS state");
+                    processAdminMyApplicationsSelection(chatId, user, text, bot);
+                    break;
+
+                case ADMIN_MANAGE_BONUS_BALANCE:
+                    System.out.println("DEBUG: ADMIN_MANAGE_BONUS_BALANCE state");
+                    processAdminBonusBalanceManagement(chatId, user, text, bot);
+                    break;
+
+                case ADMIN_USERS_MENU:
+                    System.out.println("DEBUG: ADMIN_USERS_MENU state");
+                    processAdminUsersMenu(chatId, user, text, bot);
+                    break;
+
+                case ADMIN_VIEW_ALL_USERS:
+                    System.out.println("DEBUG: ADMIN_VIEW_ALL_USERS state");
+                    processAdminViewAllUsers(chatId, user, text, bot);
+                    break;
+
+                case ADMIN_VIEW_RECENT_USERS:
+                    System.out.println("DEBUG: ADMIN_VIEW_RECENT_USERS state");
+                    processAdminViewRecentUsers(chatId, user, text, bot);
+                    break;
+
+                case ADMIN_USERS_SEARCH_USER:
+                    System.out.println("DEBUG: ADMIN_USERS_SEARCH_USER state");
+                    processAdminUsersSearchUser(chatId, user, text, bot);
+                    break;
+
+                default:
+                    System.out.println("DEBUG: UNKNOWN STATE: " + user.getState());
+                    // При неизвестном состоянии показываем главное меню
+                    String errorMessage = "❌ Неизвестное состояние. Возврат в главное меню.";
+                    bot.sendMessage(chatId, errorMessage);
+                    processMainMenu(chatId, user, bot);
             }
+        } catch (Exception e) {
+            System.out.println("ERROR in processUserState: " + e.getMessage());
+            e.printStackTrace();
 
-            BigDecimal btcPrice = (cryptoPriceService.getCurrentPrice("BTC", "RUB"));
-            BigDecimal rubAmount = btcAmount.multiply(btcPrice);
+            // При любой ошибке возвращаем в главное меню
+            String errorMessage = "❌ Произошла ошибка. Возврат в главное меню.";
+            bot.sendMessage(chatId, errorMessage);
+            processMainMenu(chatId, user, bot);
+        }
 
-            BigDecimal commission = commissionService.calculateCommission(rubAmount);
-            BigDecimal totalReceived = rubAmount.subtract(commission);
+        System.out.println("=== PROCESS_USER_STATE END ===");
+        System.out.println("Final State: " + user.getState());
+        System.out.println("=================================");
+    }
 
-            String calculation = String.format("""
-                            🧮 Расчет продажи:
-                            
-                            ₿ Продаете: %.8f BTC
-                            💰 Сумма продажи: %s
-                            💸 Комиссия: %s (%s)
-                            💵 Вы получите: %s
-                            
-                            Курс BTC: %s
-                            
-                            💡 Примечание: при реальной продаже будет учтен VIP-приоритет и купоны
-                            """,
-                    btcAmount.doubleValue(),
-                    formatRubAmount(rubAmount),
-                    formatRubAmount(commission),
-                    formatPercent(commissionService.getCommissionPercent(rubAmount)),
-                    formatRubAmount(totalReceived),
-                    formatRubAmount(btcPrice)
-            );
+    // Удаляем старый метод processEnteringBuyAmountBtc и заменяем на общий метод
+    private void processEnteringBuyAmountCrypto(Long chatId, User user, String text, MyBot bot, CryptoCurrency crypto) {
+        switch (text) {
+            case "🔙 Назад":
+                user.setState(UserState.BUY_MENU);
+                userService.update(user);
+                showBuyMenu(chatId, bot);
+                break;
+            case "🔙 Главное меню":
+                processMainMenu(chatId, user, bot);
+                break;
+            default:
+                try {
+                    BigDecimal cryptoAmount = toBigDecimal(text);
+                    if (cryptoAmount.compareTo(BigDecimal.ZERO) <= 0) {
+                        int messageId = bot.sendMessageWithKeyboard(chatId,
+                                "❌ Количество должно быть больше 0", createEnterAmountInlineKeyboard());
+                        lastMessageId.put(chatId, messageId);
+                        addMessageToHistory(chatId, messageId);
+                        return;
+                    }
 
-            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, calculation, createCalculatorMenuInlineKeyboard()));
+                    // Получаем свежую цену перед расчетом
+                    BigDecimal cryptoPrice = cryptoPriceService.getFreshPrice(crypto.name(), "RUB");
+                    BigDecimal rubAmount = cryptoAmount.multiply(cryptoPrice);
+                    BigDecimal commission = commissionService.calculateCommission(rubAmount);
+                    BigDecimal commissionPercent = commissionService.getCommissionPercent(rubAmount);
+                    BigDecimal totalAmount = commissionService.calculateTotalWithCommission(rubAmount);
 
-        } catch (NumberFormatException e) {
-            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                    "❌ Пожалуйста, введите корректное число", createCalculatorMenuInlineKeyboard()));
+                    Application application = new Application();
+                    application.setUser(user);
+                    application.setCryptoCurrency(crypto); // Устанавливаем тип криптовалюты
+                    application.setUserValueGetType(ValueType.valueOf(crypto.name())); // BTC, LTC или XMR
+                    application.setUserValueGiveType(ValueType.RUB);
+                    application.setOriginalGiveValue(rubAmount); // Сохраняем сумму БЕЗ комиссии
+                    application.setOriginalGetValue(cryptoAmount);
+                    application.setUserValueGiveValue(totalAmount);
+                    application.setUserValueGetValue(cryptoAmount);
+                    application.setCalculatedGetValue(cryptoAmount);
+                    application.setCalculatedGiveValue(totalAmount);
+                    application.setCommissionAmount(commission);
+                    application.setCommissionPercent(commissionPercent);
+                    application.setTitle("Покупка " + crypto.getSymbol() + " за RUB");
+                    application.setStatus(ApplicationStatus.FREE);
+
+                    temporaryApplications.put(user.getId(), application);
+
+                    String message = getWalletMessage(crypto, true);
+                    InlineKeyboardMarkup keyboard = createBackInlineKeyboard();
+                    int messageId = bot.sendMessageWithKeyboard(chatId, message, keyboard);
+        lastMessageId.put(chatId, messageId);
+        addMessageToHistory(chatId, messageId);
+
+                    user.setState(UserState.ENTERING_WALLET);
+                    userService.update(user);
+
+                } catch (NumberFormatException e) {
+                    int messageId = bot.sendMessageWithKeyboard(chatId,
+                            "❌ Пожалуйста, введите корректное число", createEnterAmountInlineKeyboard());
+                    lastMessageId.put(chatId, messageId);
+                    addMessageToHistory(chatId, messageId);
+                }
         }
     }
+
 
     private void processConfirmingApplication(Long chatId, User user, String text, MyBot bot) {
         Application application = temporaryApplications.get(user.getId());
@@ -552,18 +887,186 @@ public class MessageProcessor {
             case "❌ Отменить":
                 temporaryApplications.remove(user.getId());
                 String cancelMessage = "❌ Создание заявки отменено.";
-                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, cancelMessage, createBuyMenuInlineKeyboard()));
+                int messageId = bot.sendMessageWithKeyboard(chatId, cancelMessage, createMainMenuInlineKeyboard(user));
+                lastMessageId.put(chatId, messageId);
+                addMessageToHistory(chatId, messageId);
                 user.setState(UserState.MAIN_MENU);
                 userService.update(user);
                 break;
             case "🔙 Назад":
                 user.setState(UserState.APPLYING_COUPON_FINAL);
                 userService.update(user);
-                processApplyingCouponFinal(chatId, user, "🔙 Назад", bot);
+                showCouponApplication(chatId, user, application, bot);
                 break;
             default:
-                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, "❌ Пожалуйста, используйте кнопки", createFinalConfirmationInlineKeyboard()));
+                messageId = bot.sendMessageWithKeyboard(chatId, "❌ Пожалуйста, используйте кнопки", createFinalConfirmationInlineKeyboard());
+                lastMessageId.put(chatId, messageId);
+                addMessageToHistory(chatId, messageId);
         }
+    }
+
+    private void processEnteringBuyAmountRubForCrypto(Long chatId, User user, String text, MyBot bot, CryptoCurrency crypto) {
+        System.out.println("=== PROCESS_ENTERING_BUY_AMOUNT_RUB_FOR_CRYPTO START ===");
+        System.out.println("Crypto: " + crypto);
+        System.out.println("User ID: " + user.getId());
+        System.out.println("Current State: " + user.getState());
+        System.out.println("Input Text: " + text);
+
+        String currentOp = currentOperation.get(user.getId());
+        System.out.println("Current Operation: " + currentOp);
+
+        // Проверяем контекст операции
+        String expectedOperation = "BUY_" + crypto.name() + "_RUB";
+        if (!expectedOperation.equals(currentOp)) {
+            System.out.println("ERROR: Operation mismatch! Expected: " + expectedOperation + ", Got: " + currentOp);
+            String errorMessage = "❌ Ошибка сессии. Пожалуйста, начните заново.";
+            int messageId = bot.sendMessageWithKeyboard(chatId, errorMessage, createMainMenuInlineKeyboard(user));
+            lastMessageId.put(chatId, messageId);
+
+            user.setState(UserState.MAIN_MENU);
+            userService.update(user);
+            currentOperation.remove(user.getId());
+            return;
+        }
+
+        // Обработка навигационных команд
+        if (text.equals("🔙 Назад")) {
+            System.out.println("DEBUG: Handling back navigation to input method menu");
+            user.setState(UserState.CHOOSING_INPUT_METHOD);
+            userService.update(user);
+            showInputMethodMenu(chatId, user, crypto, bot);
+            return;
+        }
+
+        if (text.equals("🔙 Главное меню")) {
+            System.out.println("DEBUG: Handling main menu navigation");
+            processMainMenu(chatId, user, bot);
+            return;
+        }
+
+        // Обработка числового ввода
+        try {
+            System.out.println("DEBUG: Processing numeric input: " + text);
+
+            // Очистка ввода от пробелов и запятых
+            String cleanText = text.replace(",", ".").replace(" ", "").trim();
+            BigDecimal rubAmount = new BigDecimal(cleanText);
+
+
+            // Валидация суммы
+            if (rubAmount.compareTo(BigDecimal.valueOf(1000)) < 0) {
+                String errorMessage = "❌ Минимальная сумма заявки 1000 рублей";
+                int messageId = bot.sendMessageWithKeyboard(chatId, errorMessage, createEnterAmountInlineKeyboard());
+                lastMessageId.put(chatId, messageId);
+                return;
+            }
+
+            if (rubAmount.compareTo(BigDecimal.valueOf(500000)) > 0) {
+                String errorMessage = "❌ Максимальная сумма заявки 500,000 рублей";
+                int messageId = bot.sendMessageWithKeyboard(chatId, errorMessage, createEnterAmountInlineKeyboard());
+                lastMessageId.put(chatId, messageId);
+                return;
+            }
+
+            // Получаем свежую цену перед расчетом
+            BigDecimal cryptoPrice = cryptoPriceService.getFreshPrice(crypto.name(), "RUB");
+
+            if (cryptoPrice == null || cryptoPrice.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new RuntimeException("Не удалось получить курс " + crypto.getSymbol());
+            }
+
+            // Расчет количества криптовалюты БЕЗ комиссии
+            BigDecimal cryptoAmount = rubAmount.divide(cryptoPrice, 8, RoundingMode.HALF_UP);
+            // РАСЧЕТ КОМИССИИ ДЛЯ ПОКУПКИ
+            BigDecimal commission = commissionService.calculateCommission(rubAmount);
+            BigDecimal totalAmountWithCommission = commissionService.calculateTotalWithCommission(rubAmount);
+            BigDecimal commissionPercent = commissionService.getCommissionPercent(rubAmount);
+
+
+            // Создаем заявку
+            Application application = new Application();
+            application.setUser(user);
+            application.setCryptoCurrency(crypto);
+            application.setUserValueGetType(ValueType.valueOf(crypto.name())); // Получаем крипту
+            application.setUserValueGiveType(ValueType.RUB);
+            application.setOriginalGiveValue(rubAmount); // Сохраняем сумму БЕЗ комиссии для кэшбека
+            application.setOriginalGetValue(cryptoAmount);
+            // Отдаем рубли
+
+            // Устанавливаем значения С КОМИССИЕЙ
+            application.setUserValueGiveValue(totalAmountWithCommission); // Сумма к оплате (включая комиссию)
+            application.setUserValueGetValue(cryptoAmount);               // Количество крипты (без изменений)
+            application.setCalculatedGetValue(cryptoAmount);
+            application.setCalculatedGiveValue(totalAmountWithCommission);
+
+            // Сохраняем информацию о комиссии
+            application.setCommissionAmount(commission);
+            application.setCommissionPercent(commissionPercent);
+
+            application.setTitle("Покупка " + crypto.getSymbol() + " за RUB");
+            application.setStatus(ApplicationStatus.FREE);
+            application.setCreatedAt(LocalDateTime.now());
+            application.setExpiresAt(LocalDateTime.now().plusMinutes(40));
+
+            temporaryApplications.put(user.getId(), application);
+
+            // Информационное сообщение с деталями комиссии
+            String infoMessage = String.format("""
+                ✅ Сумма рассчитана с учетом комиссии!
+                
+                💰 Введенная сумма: %s
+                💸 Комиссия: %s (%s)
+                💵 Итого к оплате: %s
+                🪙 Вы получите: %s
+                
+                Курс %s: %s
+                """,
+                    formatRubAmount(rubAmount),
+                    formatRubAmount(commission),
+                    formatPercent(commissionPercent),
+                    formatRubAmount(totalAmountWithCommission),
+                    formatCryptoAmount(cryptoAmount, crypto),
+                    crypto.getDisplayName(),
+                    formatRubAmount(cryptoPrice)
+            );
+
+            bot.sendMessage(chatId, infoMessage);
+
+            // Переход к вводу кошелька
+            String walletMessage = getWalletMessage(crypto, true);
+            InlineKeyboardMarkup keyboard = createBackInlineKeyboard();
+            int messageId = bot.sendMessageWithKeyboard(chatId, walletMessage, keyboard);
+            lastMessageId.put(chatId, messageId);
+
+            // Обновляем состояние пользователя
+            user.setState(UserState.ENTERING_WALLET);
+            userService.update(user);
+
+            System.out.println("DEBUG: State update to ENTERING_WALLET: completed");
+
+            // Двойная проверка
+            User updatedUser = userService.find(user.getId());
+            System.out.println("DEBUG: Verified state in DB: " + (updatedUser != null ? updatedUser.getState() : "USER_NOT_FOUND"));
+
+        } catch (NumberFormatException e) {
+            System.out.println("DEBUG: NumberFormatException: " + e.getMessage());
+            String errorMessage = "❌ Пожалуйста, введите корректное число (например: 1500 или 2500.50)";
+            int messageId = bot.sendMessageWithKeyboard(chatId, errorMessage, createEnterAmountInlineKeyboard());
+            lastMessageId.put(chatId, messageId);
+        } catch (ArithmeticException e) {
+            System.out.println("DEBUG: ArithmeticException: " + e.getMessage());
+            String errorMessage = "❌ Ошибка при расчете. Попробуйте другую сумму.";
+            int messageId = bot.sendMessageWithKeyboard(chatId, errorMessage, createEnterAmountInlineKeyboard());
+            lastMessageId.put(chatId, messageId);
+        } catch (Exception e) {
+            System.out.println("DEBUG: Exception: " + e.getMessage());
+            e.printStackTrace();
+            String errorMessage = "❌ Ошибка: " + e.getMessage() + "\n\nПожалуйста, попробуйте снова.";
+            int messageId = bot.sendMessageWithKeyboard(chatId, errorMessage, createEnterAmountInlineKeyboard());
+            lastMessageId.put(chatId, messageId);
+        }
+
+        System.out.println("=== PROCESS_ENTERING_BUY_AMOUNT_RUB_FOR_CRYPTO END ===");
     }
 
     private void processBonusUsageText(Long chatId, User user, String text, MyBot bot) {
@@ -586,9 +1089,8 @@ public class MessageProcessor {
     }
 
     private void createApplicationFinal(Long chatId, User user, Application application, MyBot bot) {
-        if (application.getCalculatedGiveValue().compareTo(BigDecimal.ZERO) <= 0 ||
-                application.getCalculatedGetValue().compareTo(BigDecimal.ZERO) <= 0) {
-            String errorMessage = "❌ Ошибка: некорректные значения в заявке. Пожалуйста, создайте заявку заново.";
+        if (application.getUserValueGetType() == null || application.getUserValueGiveType() == null) {
+            String errorMessage = "❌ Ошибка: некорректные типы значений в заявке.";
             lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, errorMessage, createMainMenuInlineKeyboard(user)));
             temporaryApplications.remove(user.getId());
             user.setState(UserState.MAIN_MENU);
@@ -596,6 +1098,22 @@ public class MessageProcessor {
             return;
         }
 
+        // Применяем купон если есть
+        if (application.getAppliedCoupon() != null) {
+            Coupon coupon = application.getAppliedCoupon();
+            if (coupon.getDiscountPercent() != null) {
+                BigDecimal discountMultiplier = BigDecimal.ONE.subtract(coupon.getDiscountPercent().divide(BigDecimal.valueOf(100)));
+                application.setCalculatedGiveValue(application.getCalculatedGiveValue().multiply(discountMultiplier));
+            } else if (coupon.getDiscountAmount() != null) {
+                application.setCalculatedGiveValue(application.getCalculatedGiveValue().subtract(coupon.getDiscountAmount()));
+            }
+
+            // Обновляем счетчик использования купона
+            coupon.setUsedCount(coupon.getUsedCount() + 1);
+            couponService.updateCoupon(coupon);
+        }
+
+        // Применяем бонусный баланс
         if (application.getUsedBonusBalance().compareTo(BigDecimal.ZERO) > 0) {
             if (user.getBonusBalance().compareTo(application.getUsedBonusBalance()) >= 0) {
                 user.setBonusBalance(user.getBonusBalance().subtract(application.getUsedBonusBalance()));
@@ -610,19 +1128,27 @@ public class MessageProcessor {
             }
         }
 
+        // Устанавливаем срок действия 40 минут
+        application.setExpiresAt(LocalDateTime.now().plusMinutes(40));
         application.setStatus(ApplicationStatus.FREE);
-        applicationService.create(application); // СНАЧАЛА СОХРАНЯЕМ, ПОЛУЧАЕМ ID
+
+        // СОХРАНЯЕМ ЗАЯВКУ В БАЗУ
+        applicationService.create(application);
         temporaryApplications.remove(user.getId());
 
+        // Отправляем сообщение пользователю
         String applicationMessage = formatApplicationMessage(application);
-        int messageId = bot.sendMessageWithInlineKeyboard(chatId, applicationMessage, createApplicationInlineKeyboard(application.getId()));
+        InlineKeyboardMarkup keyboard = createApplicationInlineKeyboard(application.getId());
+        int messageId = bot.sendMessageWithInlineKeyboard(chatId, applicationMessage, keyboard);
+
+        // Сохраняем ID сообщения для возможного удаления
         application.setTelegramMessageId(messageId);
-        applicationService.update(application); // ОБНОВЛЯЕМ с ID сообщения
+        applicationService.update(application);
 
         user.setState(UserState.MAIN_MENU);
         userService.update(user);
 
-        // --- НАЧАЛО: НОВЫЙ КОД ДЛЯ УВЕДОМЛЕНИЯ АДМИНОВ ---
+        // Уведомление админам
         try {
             String adminNotification = String.format(
                     "🔔 Новая заявка #%d!\n\n" +
@@ -632,51 +1158,86 @@ public class MessageProcessor {
                     application.getId(),
                     user.getUsername() != null ? user.getUsername() : "??",
                     user.getTelegramId(),
-                    application.getUserValueGetType() == ValueType.BTC ? "Покупка BTC" : "Продажа BTC",
-                    (application.getUserValueGetType() == ValueType.BTC) ?
+                    (application.getUserValueGetType() == ValueType.BTC ||
+                     application.getUserValueGetType() == ValueType.LTC ||
+                     application.getUserValueGetType() == ValueType.XMR) ?
+                            "Покупка " + application.getCryptoCurrencySafe().getSymbol() :
+                            "Продажа " + application.getCryptoCurrencySafe().getSymbol(),
+                    (application.getUserValueGetType() == ValueType.BTC ||
+                     application.getUserValueGetType() == ValueType.LTC ||
+                     application.getUserValueGetType() == ValueType.XMR) ?
                             formatRubAmount(application.getCalculatedGiveValue()) :
-                            formatBtcAmount(application.getCalculatedGiveValue()),
-                    (application.getUserValueGetType() == ValueType.BTC) ? "₽" : "BTC"
+                            formatCryptoAmount(application.getCalculatedGiveValue(), application.getCryptoCurrencySafe()),
+                    (application.getUserValueGetType() == ValueType.BTC ||
+                     application.getUserValueGetType() == ValueType.LTC ||
+                     application.getUserValueGetType() == ValueType.XMR) ? "₽" : application.getCryptoCurrencySafe().getSymbol()
             );
 
             for (Long adminId : adminConfig.getAdminUserIds()) {
-                bot.sendMessage((long) 2, adminNotification);
+                bot.sendMessage(adminId, adminNotification);
             }
         } catch (Exception e) {
             System.err.println("Не удалось отправить уведомление админам: " + e.getMessage());
         }
-        // --- КОНЕЦ: НОВЫЙ КОД ---
+        System.out.println("DEBUG: Saving application with types - " +
+                "getType: " + application.getUserValueGetType() + ", " +
+                "giveType: " + application.getUserValueGiveType() + ", " +
+                "crypto: " + application.getCryptoCurrencySafe());
+    }
+
+    private String formatExpiresAt(LocalDateTime expiresAt) {
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
+        return expiresAt.format(formatter);
     }
 
     private String formatApplicationMessage(Application application) {
-        String operationType = application.getUserValueGetType() == ValueType.BTC ? "покупку" : "продажу";
-        String walletLabel = application.getUserValueGetType() == ValueType.BTC ? "🔐 Bitcoin-кошелек" : "💳 Реквизиты для выплаты";
+        boolean isBuy = application.getUserValueGetType() == ValueType.BTC || application.getUserValueGetType() == ValueType.LTC || application.getUserValueGetType() == ValueType.XMR ;
+        String operationType = isBuy ? "покупку" : "продажу";
+        String cryptoName = application.getCryptoCurrencySafe().getDisplayName();
+        String cryptoIcon = application.getCryptoCurrencySafe().getIcon();
+        String walletLabel = isBuy ?
+                "🔐 " + cryptoName + "-кошелек" :
+                "💳 Реквизиты для выплаты";
 
         StringBuilder message = new StringBuilder();
         message.append(String.format("""
-        ✅ Заявка на %s создана!
+        ✅ Заявка на %s %s создана!
         
         📝 ID: %s
 
         ━━━━━━━━━━━━━━━━━━━━━━━
         💰 Детали заявки
         ━━━━━━━━━━━━━━━━━━━━━━━
-        • Отдаете: %s
+        
         • Получаете: %s
+        • Отдаете: %s
         • %s: %s
         • Приоритет: %s
         """,
                 operationType,
-                application.getUuid().substring(0, 8),
-                application.getUserValueGetType() == ValueType.BTC ?
-                        formatRubAmount(application.getCalculatedGiveValue()) : formatBtcAmount(application.getCalculatedGiveValue()),
-                application.getUserValueGetType() == ValueType.BTC ?
-                        formatBtcAmount(application.getCalculatedGetValue()) : formatRubAmount(application.getCalculatedGetValue()),
+                cryptoName,
+                application.getId(), // Используем ID вместо UUID
+                isBuy ?
+                        formatCryptoAmount(application.getCalculatedGetValue(), application.getCryptoCurrencySafe()) :
+                        formatRubAmount(application.getCalculatedGetValue()),
+                isBuy ?
+                        formatRubAmount(application.getCalculatedGiveValue()) :
+                        formatCryptoAmount(application.getCalculatedGiveValue(), application.getCryptoCurrencySafe()),
                 walletLabel,
                 application.getWalletAddress(),
                 application.getIsVip() ? "👑 VIP" : "🔹 Обычный"
         ));
 
+        // Добавляем информацию о купоне
+        if (application.getAppliedCoupon() != null) {
+            Coupon coupon = application.getAppliedCoupon();
+            String discount = coupon.getDiscountPercent() != null ?
+                    coupon.getDiscountPercent() + "%" :
+                    formatRubAmount(coupon.getDiscountAmount());
+            message.append(String.format("• 🎫 Купон (%s): %s\n", coupon.getCode(), discount));
+        }
+
+        // Добавляем информацию о бонусах
         if (application.getUsedBonusBalance().compareTo(BigDecimal.ZERO) > 0) {
             message.append(String.format("• 🎁 Использовано бонусов: %s\n",
                     formatRubAmount(application.getUsedBonusBalance())));
@@ -692,26 +1253,18 @@ public class MessageProcessor {
         
         💡 Если у вас спам-блок, нажмите кнопку 🆘 ниже
         """,
-                application.getFormattedExpiresAt(),
+                formatExpiresAt(application.getExpiresAt()),
                 application.getStatus().getDisplayName()
         ));
 
+        System.out.println("DEBUG: Заявка " + application.getId());
+        System.out.println("DEBUG: isBuy = " + isBuy);
+        System.out.println("DEBUG: Получаем: " + application.getCalculatedGetValue() + " " + application.getUserValueGetType());
+        System.out.println("DEBUG: Отдаем: " + application.getCalculatedGiveValue() + " " + application.getUserValueGiveType());
+
+
         return message.toString();
     }
-
-    private void updateApplicationMessage(Long chatId, Application application, MyBot bot) {
-        if (application.getTelegramMessageId() == null) return;
-
-        String updatedMessage = formatApplicationMessage(application);
-        InlineKeyboardMarkup keyboard = createApplicationInlineKeyboard(application.getId());
-
-        try {
-            bot.editMessageText(chatId, application.getTelegramMessageId(), updatedMessage, keyboard);
-        } catch (Exception e) {
-            System.err.println("Не удалось обновить сообщение заявки: " + e.getMessage());
-        }
-    }
-
 
 
     private void processAdminApplicationActions(Long chatId, User user, String text, MyBot bot) {
@@ -727,6 +1280,8 @@ public class MessageProcessor {
             return;
         }
 
+        ApplicationStatus oldStatus = application.getStatus(); // Сохраняем старый статус для логирования
+
         switch (text) {
             case "🟡 В работу":
                 application.setStatus(ApplicationStatus.IN_WORK);
@@ -738,9 +1293,6 @@ public class MessageProcessor {
                 application.setStatus(ApplicationStatus.COMPLETED);
                 updateUserStatistics(application);
                 referralService.processReferralReward(application);
-                if (application.getTelegramMessageId() != null) {
-                    bot.deleteMessage(application.getUser().getTelegramId(), application.getTelegramMessageId());
-                }
                 break;
             case "🔴 Отменить":
                 application.setStatus(ApplicationStatus.CANCELLED);
@@ -756,10 +1308,6 @@ public class MessageProcessor {
                             formatRubAmount(application.getUsedBonusBalance()), application.getId()
                     );
                     bot.sendMessage(applicationUser.getTelegramId(), bonusReturnMessage);
-                }
-
-                if (application.getTelegramMessageId() != null) {
-                    bot.deleteMessage(application.getUser().getTelegramId(), application.getTelegramMessageId());
                 }
                 break;
             case "🟢 Свободна":
@@ -788,6 +1336,11 @@ public class MessageProcessor {
 
         applicationService.update(application);
 
+        // ОБНОВЛЯЕМ СООБЩЕНИЕ У ПОЛЬЗОВАТЕЛЯ
+        if (oldStatus != application.getStatus()) {
+            updateUserApplicationMessage(application, bot);
+        }
+
         String message = String.format("✅ Статус заявки #%d изменен на: %s",
                 applicationId, application.getStatus().getDisplayName());
         lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createBackToAdminKeyboard()));
@@ -804,7 +1357,6 @@ public class MessageProcessor {
         int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
         lastMessageId.put(chatId, messageId);
     }
-
     private InlineKeyboardMarkup createAdminBonusBalanceManagementInlineKeyboard() {
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
@@ -834,83 +1386,275 @@ public class MessageProcessor {
         markup.setKeyboard(rows);
         return markup;
     }
-
     private void updateUserStatistics(Application application) {
         User user = application.getUser();
 
         if (application.getStatus() == ApplicationStatus.COMPLETED) {
-            BigDecimal cashback = BigDecimal.ZERO;
+            // ПРАВИЛЬНОЕ ОПРЕДЕЛЕНИЕ ТИПА ОПЕРАЦИИ
+            boolean isBuy = application.getUserValueGetType() == ValueType.BTC ||
+                    application.getUserValueGetType() == ValueType.LTC ||
+                    application.getUserValueGetType() == ValueType.XMR;
 
-            if (application.getUserValueGetType() == ValueType.BTC) {
+            if (isBuy) {
+                // Покупка криптовалюты - получаем крипту, отдаем рубли
                 user.setCompletedBuyApplications(user.getCompletedBuyApplications() + 1);
-                user.setTotalBuyAmount(user.getTotalBuyAmount().add(application.getCalculatedGiveValue()));
-                cashback = application.getCalculatedGiveValue().multiply(BigDecimal.valueOf(0.03));
+                user.setTotalBuyAmount(user.getTotalBuyAmount().add(application.getOriginalGiveValue()));
             } else {
+                // Продажа криптовалюты - получаем рубли, отдаем крипту
                 user.setCompletedSellApplications(user.getCompletedSellApplications() + 1);
-                user.setTotalSellAmount(user.getTotalSellAmount().add(application.getCalculatedGetValue()));
-                cashback = application.getCalculatedGetValue().multiply(BigDecimal.valueOf(0.03));
+                user.setTotalSellAmount(user.getTotalSellAmount().add(application.getOriginalGetValue()));
             }
 
-            user.setBonusBalance(user.getBonusBalance().add(cashback));
             user.setTotalApplications(user.getTotalApplications() + 1);
+
+            // Сохраняем изменения
             userService.update(user);
+
+            System.out.println("STATISTICS DEBUG: User " + user.getId() +
+                    ", Operation: " + (isBuy ? "BUY" : "SELL") +
+                    ", Completed Buy Apps: " + user.getCompletedBuyApplications() +
+                    ", Completed Sell Apps: " + user.getCompletedSellApplications() +
+                    ", Total Apps: " + user.getTotalApplications());
+        }
+    }
+
+    private void updateUserApplicationMessage(Application application, MyBot bot) {
+        try {
+            if (application.getTelegramMessageId() != null && application.getUser() != null) {
+                String updatedMessage = formatApplicationMessage(application);
+                InlineKeyboardMarkup keyboard = createApplicationInlineKeyboard(application.getId());
+
+                // Редактируем существующее сообщение
+                bot.editMessageText(
+                        application.getUser().getTelegramId(),
+                        application.getTelegramMessageId(),
+                        updatedMessage,
+                        keyboard
+                );
+
+                System.out.println("DEBUG: Updated application message for user " +
+                        application.getUser().getId() + ", status: " + application.getStatus());
+            }
+        } catch (Exception e) {
+            System.err.println("Ошибка при обновлении сообщения пользователя: " + e.getMessage());
+            // Если не удалось отредактировать сообщение, можно отправить новое
+            try {
+                String updatedMessage = formatApplicationMessage(application);
+                InlineKeyboardMarkup keyboard = createApplicationInlineKeyboard(application.getId());
+                int newMessageId = bot.sendMessageWithInlineKeyboard(
+                        application.getUser().getTelegramId(),
+                        updatedMessage,
+                        keyboard
+                );
+
+                // Обновляем ID сообщения в заявке
+                application.setTelegramMessageId(newMessageId);
+                applicationService.update(application);
+
+            } catch (Exception ex) {
+                System.err.println("Не удалось отправить новое сообщение пользователю: " + ex.getMessage());
+            }
         }
     }
 
     private void processAdminCommissionSettings(Long chatId, User user, String text, MyBot bot) {
+        System.out.println("=== PROCESS_ADMIN_COMMISSION_SETTINGS START ===");
+        System.out.println("Admin User ID: " + user.getId());
+        System.out.println("Input Text: " + text);
+
+        // Проверяем права администратора
+        if (!adminConfig.isAdmin(user.getId())) {
+            System.out.println("ERROR: User is not admin");
+            String errorMessage = "❌ Доступ запрещен";
+            int messageId = bot.sendMessageWithKeyboard(chatId, errorMessage, createMainMenuInlineKeyboard(user));
+            lastMessageId.put(chatId, messageId);
+            return;
+        }
+
+        // Обработка навигационных команд
         if (text.equals("🔙 Назад")) {
+            System.out.println("DEBUG: Handling back navigation to admin menu");
             user.setState(UserState.ADMIN_MAIN_MENU);
             userService.update(user);
             showAdminMainMenu(chatId, bot);
             return;
         }
 
+        if (text.equals("🔙 Главное меню")) {
+            System.out.println("DEBUG: Handling main menu navigation");
+            processMainMenu(chatId, user, bot);
+            return;
+        }
+
+        if (text.equals("🧪 Тест комиссий")) {
+            System.out.println("DEBUG: Running commission test");
+            testCommissionCalculation(chatId, bot);
+            return;
+        }
+
+        // Обработка обновления комиссий
         try {
             String[] parts = text.split(" ");
             if (parts.length == 2) {
                 String rangeStr = parts[0];
-                // ИЗМЕНЕНО: double на BigDecimal
                 BigDecimal percent = new BigDecimal(parts[1]);
 
+                System.out.println("COMMISSION DEBUG: Admin updating commission - Range: " + rangeStr + ", Percent: " + percent);
+
+                // Валидация процента комиссии
+                if (percent.compareTo(BigDecimal.ZERO) <= 0 || percent.compareTo(BigDecimal.valueOf(100)) >= 0) {
+                    String errorMessage = "❌ Процент комиссии должен быть между 0.1 и 99.9";
+                    int messageId = bot.sendMessageWithKeyboard(chatId, errorMessage, createBackToAdminKeyboard());
+                    lastMessageId.put(chatId, messageId);
+                    return;
+                }
+
                 if (rangeStr.contains("-")) {
+                    // Обработка диапазона (например: "1000-1999")
                     String[] rangeParts = rangeStr.split("-");
-                    // ИЗМЕНЕНО: double на BigDecimal
+                    if (rangeParts.length != 2) {
+                        throw new IllegalArgumentException("Неверный формат диапазона. Используйте: 1000-1999");
+                    }
+
                     BigDecimal min = new BigDecimal(rangeParts[0]);
                     BigDecimal max = new BigDecimal(rangeParts[1]);
-                    commissionConfig.updateCommissionRange(min, percent);
 
-                    String message = String.format("✅ Комиссия обновлена!\n\nДиапазон: %.0f-%.0f ₽\nКомиссия: %.1f%%",
-                            min.doubleValue(), max.doubleValue(), percent.doubleValue()); // Конвертация для вывода
-                    lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createBackToAdminKeyboard()));
+                    if (min.compareTo(max) >= 0) {
+                        throw new IllegalArgumentException("Минимальное значение должно быть меньше максимального");
+                    }
+
+                    // Проверяем, что диапазон соответствует существующим настройкам
+                    if (!isValidRange(min)) {
+                        throw new IllegalArgumentException("Диапазон должен начинаться с одного из порогов: 1000, 2000, 3000, 5000, 10000, 15000, 20000");
+                    }
+
+                    commissionConfig.updateCommissionRange(min, max, percent);
+
+                    String message = String.format("✅ Комиссия обновлена!\n\nДиапазон: %s-%s ₽\nКомиссия: %.1f%%",
+                            min, max, percent.doubleValue());
+                    int messageId = bot.sendMessageWithKeyboard(chatId, message, createBackToAdminKeyboard());
+                    lastMessageId.put(chatId, messageId);
+
                 } else {
-                    // ИЗМЕНЕНО: double на BigDecimal
+                    // Обработка минимальной суммы (например: "5000")
                     BigDecimal min = new BigDecimal(rangeStr);
+
+                    if (min.compareTo(BigDecimal.ZERO) <= 0) {
+                        throw new IllegalArgumentException("Минимальная сумма должна быть больше 0");
+                    }
+
+                    // Проверяем, что порог соответствует существующим настройкам
+                    if (!isValidThreshold(min)) {
+                        throw new IllegalArgumentException("Порог должен быть одним из: 1000, 2000, 3000, 5000, 10000, 15000, 20000");
+                    }
+
                     commissionConfig.updateCommissionRange(min, percent);
 
-                    String message = String.format("✅ Комиссия обновлена!\n\nОт %.0f ₽\nКомиссия: %.1f%%",
-                            min.doubleValue(), percent.doubleValue()); // Конвертация для вывода
-                    lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createBackToAdminKeyboard()));
+                    String message = String.format("✅ Комиссия обновлена!\n\nОт %s ₽\nКомиссия: %.1f%%",
+                            rangeStr, percent.doubleValue());
+                    int messageId = bot.sendMessageWithKeyboard(chatId, message, createBackToAdminKeyboard());
+                    lastMessageId.put(chatId, messageId);
                 }
+
+                // Логируем обновление
+                System.out.println("COMMISSION DEBUG: Commission updated successfully");
+
+                // Показываем обновленные настройки
+                showAdminCommissionSettings(chatId, user, bot);
                 return;
             }
+        } catch (NumberFormatException e) {
+            System.out.println("COMMISSION DEBUG: NumberFormatException: " + e.getMessage());
+            String errorMessage = "❌ Неверный числовой формат. Используйте числа (например: 1000 50.0)";
+            int messageId = bot.sendMessageWithKeyboard(chatId, errorMessage, createBackToAdminKeyboard());
+            lastMessageId.put(chatId, messageId);
+        } catch (IllegalArgumentException e) {
+            System.out.println("COMMISSION DEBUG: IllegalArgumentException: " + e.getMessage());
+            String errorMessage = "❌ " + e.getMessage();
+            int messageId = bot.sendMessageWithKeyboard(chatId, errorMessage, createBackToAdminKeyboard());
+            lastMessageId.put(chatId, messageId);
         } catch (Exception e) {
-            // Не удалось распарсить
+            System.out.println("COMMISSION DEBUG: Exception: " + e.getMessage());
+            e.printStackTrace();
+            String errorMessage = "❌ Ошибка при обновлении комиссии: " + e.getMessage();
+            int messageId = bot.sendMessageWithKeyboard(chatId, errorMessage, createBackToAdminKeyboard());
+            lastMessageId.put(chatId, messageId);
         }
 
-        String message = "💰 Управление комиссиями\n\n" +
-                "Текущие настройки:\n" +
-                // ИЗМЕНЕНО: Передаем BigDecimal в getCommissionPercent
-                "• 1000-1999 ₽: " + commissionConfig.getCommissionPercent(new BigDecimal("1000")) + "%\n" +
-                "• 2000-2999 ₽: " + commissionConfig.getCommissionPercent(new BigDecimal("2000")) + "%\n" +
-                "• 3000-4999 ₽: " + commissionConfig.getCommissionPercent(new BigDecimal("3000")) + "%\n" +
-                "• 5000+ ₽: " + commissionConfig.getCommissionPercent(new BigDecimal("5000")) + "%\n\n" +
-                "Для изменения введите:\n" +
-                "• Для диапазона: 1000-1999 5\n" +
-                "• Для минимальной суммы: 5000 2\n\n" +
-                "Используйте '🔙 Назад' для возврата";
+        // Если не удалось распарсить или произошла ошибка, показываем инструкцию снова
+        showAdminCommissionSettings(chatId, user, bot);
+        System.out.println("=== PROCESS_ADMIN_COMMISSION_SETTINGS END ===");
+    }
 
-        InlineKeyboardMarkup keyboard = createBackToAdminKeyboard();
-        lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, keyboard));
+    // Вспомогательные методы для валидации порогов
+    private boolean isValidThreshold(BigDecimal threshold) {
+        Set<BigDecimal> validThresholds = Set.of(
+                new BigDecimal("1000"), new BigDecimal("2000"), new BigDecimal("3000"),
+                new BigDecimal("5000"), new BigDecimal("10000"), new BigDecimal("15000"),
+                new BigDecimal("20000")
+        );
+        return validThresholds.contains(threshold);
+    }
+
+    private boolean isValidRange(BigDecimal minThreshold) {
+        return isValidThreshold(minThreshold);
+    }
+
+    private void testCommissionCalculation(Long chatId, MyBot bot) {
+        System.out.println("COMMISSION DEBUG: Running commission test");
+
+        StringBuilder testResults = new StringBuilder();
+        testResults.append("🧪 Тест комиссий:\n\n");
+
+        // Тестовые суммы для проверки комиссий
+        BigDecimal[] testAmounts = {
+                new BigDecimal("500"),   // Меньше минимальной
+                new BigDecimal("1500"),  // 1000-1999
+                new BigDecimal("2500"),  // 2000-2999
+                new BigDecimal("3500"),  // 3000-4999
+                new BigDecimal("6000"),  // 5000-9999
+                new BigDecimal("12000"), // 10000-14999
+                new BigDecimal("18000"), // 15000-19999
+                new BigDecimal("22000")  // 20000-24999
+        };
+
+        for (BigDecimal amount : testAmounts) {
+            try {
+                BigDecimal commission = commissionService.calculateCommission(amount);
+                BigDecimal percent = commissionService.getCommissionPercent(amount);
+                BigDecimal totalWithCommission = commissionService.calculateTotalWithCommission(amount);
+                BigDecimal totalWithoutCommission = commissionService.calculateTotalWithoutCommission(amount);
+
+                testResults.append(String.format("""
+                    💰 %s ₽:
+                    • Комиссия: %s (%s)
+                    • Итого с комиссией: %s
+                    • Итого без комиссии: %s
+                    
+                    """,
+                        formatRubAmount(amount),
+                        formatRubAmount(commission),
+                        formatPercent(percent),
+                        formatRubAmount(totalWithCommission),
+                        formatRubAmount(totalWithoutCommission)
+                ));
+            } catch (Exception e) {
+                testResults.append(String.format("""
+                    ❌ %s ₽: Ошибка расчета - %s
+                    
+                    """,
+                        formatRubAmount(amount),
+                        e.getMessage()
+                ));
+            }
+        }
+
+        testResults.append("\n💡 Примечание:\n");
+        testResults.append("• Для покупки используется 'Итого с комиссией'\n");
+        testResults.append("• Для продажи используется 'Итого без комиссии'");
+
+        bot.sendMessage(chatId, testResults.toString());
+        System.out.println("COMMISSION DEBUG: Commission test completed");
     }
 
     private void processStartCommand(Update update, MyBot bot) {
@@ -918,41 +1662,70 @@ public class MessageProcessor {
         org.telegram.telegrambots.meta.api.objects.User telegramUser = update.getMessage().getFrom();
         String text = update.getMessage().getText();
 
+        // Очищаем весь чат при команде /start
+        clearChatExceptApplications(chatId, bot);
+
         User user = userService.findOrCreateUser(telegramUser);
 
+        // Отправляем уведомление админам о новом пользователе
+        if (userService.wasUserCreated(user, telegramUser)) {
+            sendNewUserNotificationToAdmins(user, bot);
+        }
+
+        // Обработка реферальных ссылок (формат: /start ref_CODE или /start CODE)
         if (text.contains(" ")) {
             String[] parts = text.split(" ");
-            if (parts.length > 1 && parts[1].startsWith("ref_")) {
-                String refIdStr = parts[1].replace("ref_", "");
-                try {
-                    Long inviterTelegramId = Long.parseLong(refIdStr);
-                    User inviter = userService.findByTelegramId(inviterTelegramId);
-
+            if (parts.length > 1) {
+                String refCodeParam = parts[1];
+                String refCode = null;
+                
+                // Поддерживаем формат ref_CODE
+                if (refCodeParam.startsWith("ref_")) {
+                    refCode = refCodeParam.substring(4); // Убираем префикс "ref_"
+                } else {
+                    refCode = refCodeParam; // Просто код без префикса
+                }
+                
+                // Ищем реферальный код в базе
+                ReferralCode referralCode = referralService.findByCode(refCode);
+                if (referralCode != null && referralCode.getIsActive()) {
+                    User inviter = referralCode.getUser();
                     if (inviter != null && !inviter.getId().equals(user.getId())) {
-                        user.setInvitedBy(inviter);
-                        user.setInvitedAt(LocalDateTime.now());
-                        referralService.processReferralRegistration(inviter, user);
+                        // Сохраняем реферальный код пользователю
+                        user.setUsedReferralCode(refCode);
+                        userService.update(user);
+                        
+                        // ИСПРАВЛЕННЫЙ ВЫЗОВ: передаем код
+                        referralService.processReferralRegistration(inviter, user, refCode);
                     }
-                } catch (NumberFormatException e) {
-                    // Неверный формат реферального ID
                 }
             }
         }
 
         String welcomeMessage = """
-        🎉 Добро пожаловать в COSA NOSTRA CHANGE!
-        
-        ⚠️ Будьте бдительны!
-        Не подвергайтесь провокациям мошенников, наш оператор первым не пишет✍️
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        ⚠️ ВНИМАНИЕ! Будьте бдительны!
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-        Актуальные контакты:
-        ЧАТ/БОТ/ОТЗЫВЫ/РЕЗЕРВ :@CN_FEEDBACKBOT
-        ☎️Оператор 24/7: @SUP_CN
-        
-        Для продолжения пройдите проверку безопасности:
+        🛡️ Не подвергайтесь провокациям мошенников!
+        ✍️ Наш оператор НИКОГДА НЕ ПИШЕТ ПЕРВЫМ
+
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        📞 АКТУАЛЬНЫЕ КОНТАКТЫ
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        🚪 Доступ в проект: @COSANOSTRALOBBYBOT
+        👨‍💼 Оператор 24/7: @SUP_CN
+        🔧 Техподдержка 24/7: @CN_BUGSY 
+          └─ Всегда онлайн, решим любой вопрос!
+
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        🔒 ПРОВЕРКА БЕЗОПАСНОСТИ
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
         """;
 
-        bot.sendMessage(chatId, welcomeMessage);
+        int welcomeMessageId = bot.sendMessage(chatId, welcomeMessage);
+        firstWelcomeMessageId.put(chatId, welcomeMessageId); // Сохраняем ID первого приветственного сообщения
 
         user.setState(UserState.CAPTCHA_CHECK);
         userService.update(user);
@@ -967,29 +1740,11 @@ public class MessageProcessor {
         String message = "🔐 Для продолжения пройдите проверку безопасности\n\n" +
                 "Выберите смайлик: \"" + challenge.getCorrectEmoji() + "\"";
 
-        lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, keyboard));
-    }
-
-    private void showBonusBalanceApplication(Long chatId, User user, Application application, MyBot bot) {
-        BigDecimal availableBonus = user.getBonusBalance();
-        BigDecimal maxUsable = availableBonus.min(application.getCalculatedGiveValue());
-
-        String message = String.format("""
-        💰 У вас есть бонусный баланс: %s
-        
-        Вы можете использовать до %s для этой заявки.
-        
-        Введите сумму бонусного баланса для использования:
-        (или 0, если не хотите использовать)
-        """, formatRubAmount(availableBonus), formatRubAmount(maxUsable));
-
-        InlineKeyboardMarkup inlineKeyboard = createBonusBalanceKeyboard(maxUsable);
-        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
+        int messageId = bot.sendMessageWithKeyboard(chatId, message, keyboard);
         lastMessageId.put(chatId, messageId);
-
-        user.setState(UserState.USING_BONUS_BALANCE);
-        userService.update(user);
+        addMessageToHistory(chatId, messageId);
     }
+
 
     private InlineKeyboardMarkup createBonusBalanceKeyboard(BigDecimal maxUsable) {
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
@@ -1236,6 +1991,58 @@ public class MessageProcessor {
         lastMessageId.put(chatId, messageId);
     }
 
+
+    private void sendCompletionMessageToUser(Application application, MyBot bot) {
+        try {
+            User user = application.getUser();
+            if (user == null) return;
+
+            String message = String.format(
+                "🎉 Поздравляем!\n\n" +
+                "✅ Ваша заявка #%d успешно выполнена!\n\n" +
+                "💰 Получено: %s\n" +
+                "💎 Отдано: %s\n\n" +
+                "Спасибо за использование нашего сервиса!",
+                application.getId(),
+                formatCryptoAmount(application.getUserValueGetValue(), application.getCryptoCurrencySafe()),
+                application.getUserValueGiveType() == ValueType.RUB ?
+                    formatRubAmount(application.getUserValueGiveValue()) :
+                    formatCryptoAmount(application.getUserValueGiveValue(), application.getCryptoCurrencySafe())
+            );
+
+            InlineKeyboardMarkup keyboard = createCompletionMessageKeyboard();
+            bot.sendMessageWithInlineKeyboard(user.getTelegramId(), message, keyboard);
+
+        } catch (Exception e) {
+            System.err.println("Ошибка при отправке поздравительного сообщения: " + e.getMessage());
+        }
+    }
+
+    private InlineKeyboardMarkup createCompletionMessageKeyboard() {
+        InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+
+        // Кнопка оставить отзыв
+        List<InlineKeyboardButton> row1 = new ArrayList<>();
+        InlineKeyboardButton feedbackButton = new InlineKeyboardButton();
+        feedbackButton.setText("⭐ Оставить отзыв");
+        feedbackButton.setUrl("https://t.me/CN_FEEDBACKBOT");
+        row1.add(feedbackButton);
+
+        // Кнопка главное меню
+        List<InlineKeyboardButton> row2 = new ArrayList<>();
+        InlineKeyboardButton mainMenuButton = new InlineKeyboardButton();
+        mainMenuButton.setText("💎 Главное меню");
+        mainMenuButton.setCallbackData("inline_main_menu");
+        row2.add(mainMenuButton);
+
+        rows.add(row1);
+        rows.add(row2);
+        markup.setKeyboard(rows);
+        return markup;
+    }
+
+
     private void processAdminApplicationActionCallback(Long chatId, User user, String callbackData, MyBot bot, String callbackQueryId) {
         try {
             String[] parts = callbackData.split("_");
@@ -1246,6 +2053,8 @@ public class MessageProcessor {
                 bot.answerCallbackQuery(callbackQueryId, "❌ Заявка не найдена");
                 return;
             }
+
+            ApplicationStatus oldStatus = application.getStatus(); // Сохраняем старый статус
 
             // Определяем действие
             String action = callbackData.contains("inwork") ? "inwork" :
@@ -1271,23 +2080,34 @@ public class MessageProcessor {
                     break;
                 case "completed":
                     application.setStatus(ApplicationStatus.COMPLETED);
+
                     updateUserStatistics(application);
+
+                    // РЕФЕРАЛЬНЫЕ ВЫПЛАТЫ
                     referralService.processReferralReward(application);
-                    // Удаляем сообщение у пользователя
-                    if (application.getTelegramMessageId() != null) {
-                        bot.deleteMessage(application.getUser().getTelegramId(), application.getTelegramMessageId());
-                    }
+
+                    // ОТПРАВЛЯЕМ ПОЗДРАВИТЕЛЬНОЕ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЮ
+                    sendCompletionMessageToUser(application, bot);
                     break;
                 case "cancel":
                     application.setStatus(ApplicationStatus.CANCELLED);
-                    // Удаляем сообщение у пользователя
-                    if (application.getTelegramMessageId() != null) {
-                        bot.deleteMessage(application.getUser().getTelegramId(), application.getTelegramMessageId());
+                    // Возвращаем бонусный баланс
+                    if (application.getUsedBonusBalance().compareTo(BigDecimal.ZERO) > 0) {
+                        User applicationUser = application.getUser();
+                        applicationUser.setBonusBalance(applicationUser.getBonusBalance().add(application.getUsedBonusBalance()));
+                        userService.update(applicationUser);
+
+                        String bonusReturnMessage = String.format(
+                                "💸 Вам возвращен бонусный баланс: %s\n" +
+                                        "📝 Причина: отмена заявки #%d",
+                                formatRubAmount(application.getUsedBonusBalance()), application.getId()
+                        );
+                        bot.sendMessage(applicationUser.getTelegramId(), bonusReturnMessage);
                     }
                     break;
                 case "free":
                     application.setStatus(ApplicationStatus.FREE);
-                    application.setAdminId(0); // Снимаем привязку к админу
+                    application.setAdminId((long) 0); // Снимаем привязку к админу
                     break;
                 case "userinfo":
                     // Показываем информацию о пользователе
@@ -1297,6 +2117,11 @@ public class MessageProcessor {
             }
 
             applicationService.update(application);
+
+            // ОБНОВЛЯЕМ СООБЩЕНИЕ У ПОЛЬЗОВАТЕЛЯ
+            if (oldStatus != application.getStatus()) {
+                updateUserApplicationMessage(application, bot);
+            }
 
             String statusMessage = String.format("✅ Статус заявки #%d изменен на: %s",
                     applicationId, application.getStatus().getDisplayName());
@@ -1321,7 +2146,6 @@ public class MessageProcessor {
         int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
         lastMessageId.put(chatId, messageId);
     }
-
     private void processBonusBalanceOperation(Long chatId, User admin, String callbackData, MyBot bot, String callbackQueryId) {
         try {
             String[] parts = callbackData.split("_");
@@ -1365,332 +2189,576 @@ public class MessageProcessor {
             bot.answerCallbackQuery(callbackQueryId, "❌ Ошибка при операции с балансом");
         }
     }
+    private void showEnterAmountRubMenu(Long chatId, User user, CryptoCurrency crypto, MyBot bot) {
+        // Получаем текущую цену для справки
+        BigDecimal currentPrice = cryptoPriceService.getCurrentPrice(crypto.name(), "RUB");
 
+        String message = String.format("""
+        💎 Введите сумму в RUB для покупки %s:
+        
+        💸 Минимальная сумма: 1000 RUB
+        """,
+                crypto.getDisplayName(),
+                crypto.getSymbol(),
+                formatRubAmount(currentPrice)
+        );
 
-
+        InlineKeyboardMarkup inlineKeyboard = createEnterAmountInlineKeyboard();
+        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
+        lastMessageId.put(chatId, messageId);
+    }
     private void processInlineButton(Long chatId, User user, String callbackData, MyBot bot, String callbackQueryId) {
+        System.out.println("=== PROCESS_INLINE_BUTTON START ===");
+        System.out.println("User ID: " + user.getId());
+        System.out.println("Callback Data: " + callbackData);
+        System.out.println("Current State: " + user.getState());
+        System.out.println("Callback Query ID: " + callbackQueryId);
+
         deletePreviousBotMessage(chatId, bot);
 
         if (callbackQueryId != null) {
             bot.answerCallbackQuery(callbackQueryId, "🔄 Обработка...");
         }
 
-        // Обработка админских действий с заявками
-        if (callbackData.startsWith("inline_admin_app_")) {
-            processAdminApplicationActionCallback(chatId, user, callbackData, bot, callbackQueryId);
-            return;
-        }
+        try {
+            // ========== ОБРАБОТКА АДМИНСКИХ ДЕЙСТВИЙ С ЗАЯВКАМИ ==========
+            if (callbackData.startsWith("inline_admin_app_")) {
+                System.out.println("DEBUG: Processing admin application action");
+                processAdminApplicationActionCallback(chatId, user, callbackData, bot, callbackQueryId);
+                return;
+            }
+            if (callbackData.startsWith("inline_admin_page_")) {
+                processAdminPageChange(chatId, user, callbackData, bot);
+                return;
+            }
+            if (callbackData.startsWith("inline_admin_users_prev_") ||
+                callbackData.startsWith("inline_admin_users_next_") ||
+                callbackData.equals("inline_admin_users_page_info") ||
+                callbackData.equals("inline_admin_users_back")) {
+                processAdminUsersPageChange(chatId, user, callbackData, bot);
+                return;
+            }
 
-        // Обработка бонусных операций админа
-        if (callbackData.startsWith("inline_bonus_add_") || callbackData.startsWith("inline_bonus_remove_") ||
-                callbackData.startsWith("inline_bonus_reset_")) {
-            processBonusBalanceOperation(chatId, user, callbackData, bot, callbackQueryId);
-            return;
-        }
+            // ========== ОБРАБОТКА БОНУСНЫХ ОПЕРАЦИЙ АДМИНА ==========
+            if (callbackData.startsWith("inline_bonus_add_") || callbackData.startsWith("inline_bonus_remove_") ||
+                    callbackData.startsWith("inline_bonus_reset_")) {
+                System.out.println("DEBUG: Processing admin bonus operation");
+                processBonusBalanceOperation(chatId, user, callbackData, bot, callbackQueryId);
+                return;
+            }
 
-        // Обработка использования бонусов в заявке
-        if (callbackData.startsWith("inline_bonus_use_")) {
-            processBonusUsageFromCallback(chatId, user, callbackData, bot, callbackQueryId);
-            return;
-        }
+            // ========== ОБРАБОТКА ИСПОЛЬЗОВАНИЯ БОНУСОВ В ЗАЯВКЕ ==========
+            if (callbackData.startsWith("inline_bonus_use_")) {
+                System.out.println("DEBUG: Processing bonus usage");
+                processBonusUsageFromCallback(chatId, user, callbackData, bot, callbackQueryId);
+                return;
+            }
 
-        // ОСНОВНЫЕ КЕЙСЫ
-        switch (callbackData) {
-            // === ОСНОВНОЕ МЕНЮ ===
-            case "inline_buy":
-                user.setState(UserState.BUY_MENU);
+            // ========== ОБРАБОТКА ВЫБОРА СПОСОБА ВВОДА ==========
+            if (callbackData.startsWith("inline_input_crypto_")) {
+                String cryptoName = callbackData.replace("inline_input_crypto_", "");
+                CryptoCurrency crypto = CryptoCurrency.valueOf(cryptoName);
+                System.out.println("DEBUG: Setting crypto input method for " + crypto);
+
+                user.setState(getBuyCryptoState(crypto));
                 userService.update(user);
-                showBuyMenu(chatId, bot);
-                break;
+                currentOperation.put(user.getId(), "BUY_" + crypto.name());
+                showEnterAmountMenu(chatId, user, crypto, bot);
+                return;
+            }
 
-            case "inline_spam_block_help":
-                // 1. Формируем сообщение для админов
-                String spamMessage = String.format(
-                        "🆘 СПАМ-БЛОК! 🆘\n\n" +
-                                "Пользователь @%s (ID: %d) не может вам написать.\n" +
-                                "Пожалуйста, свяжитесь с ним!",
-                        user.getUsername() != null ? user.getUsername() : "??",
-                        user.getTelegramId()
-                );
+            if (callbackData.startsWith("inline_input_rub_")) {
+                String cryptoName = callbackData.replace("inline_input_rub_", "");
+                CryptoCurrency crypto = CryptoCurrency.valueOf(cryptoName);
+                System.out.println("DEBUG: Setting RUB input method for " + crypto);
 
-                // 2. Отправляем всем админам
+                user.setState(getBuyRubState(crypto));
+                userService.update(user);
+                currentOperation.put(user.getId(), "BUY_" + crypto.name() + "_RUB");
+                showEnterAmountRubMenu(chatId, user, crypto, bot);
+                return;
+            }
+
+            // ========== ОСНОВНЫЕ КЕЙСЫ ==========
+            System.out.println("DEBUG: Processing main callback: " + callbackData);
+
+            switch (callbackData) {
+                // === ОСНОВНОЕ МЕНЮ ===
+                case "inline_buy":
+                    System.out.println("DEBUG: inline_buy - switching to BUY_MENU");
+                    user.setState(UserState.BUY_MENU);
+                    userService.update(user);
+                    showBuyMenu(chatId, bot);
+                    break;
+
+                case "inline_spam_block_help":
+                    System.out.println("DEBUG: inline_spam_block_help");
+                    String spamMessage = String.format(
+                            "🆘 СПАМ-БЛОК! 🆘\n\n" +
+                                    "Пользователь @%s (ID: %d) не может вам написать.\n" +
+                                    "Пожалуйста, свяжитесь с ним!",
+                            user.getUsername() != null ? user.getUsername() : "??",
+                            user.getTelegramId()
+                    );
+
                     try {
-                        bot.sendMessage((long) 708736580, spamMessage);
+                        bot.sendMessage(8161846961L, spamMessage);
                     } catch (Exception e) {
-                        // Игнорируем, если админ заблокировал бота
+                        System.out.println("DEBUG: Failed to send spam message to admin");
                     }
 
+                    if (callbackQueryId != null) {
+                        bot.answerCallbackQuery(callbackQueryId, "✅ Уведомление операторам отправлено!");
+                    }
+                    int msgId = bot.sendMessage(chatId, "✅ Я отправил уведомление операторам, что вы не можете им написать. Они скоро свяжутся с вами.");
+                    lastMessageId.put(chatId, msgId);
+                    break;
 
-                // 3. Отвечаем пользователю
-                bot.answerCallbackQuery(callbackQueryId, "✅ Уведомление операторам отправлено!");
-                int msgId = bot.sendMessage(chatId, "✅ Я отправил уведомление операторам, что вы не можете им написать. Они скоро свяжутся с вами.");
-                lastMessageId.put(chatId, msgId);
-                break;
 
-            case "inline_sell":
-                user.setState(UserState.SELL_MENU);
-                userService.update(user);
-                showSellMenu(chatId, bot);
-                break;
+                case "inline_referral_conditions":
+                    System.out.println("DEBUG: inline_referral_conditions");
+                    showReferralTerms(chatId, user, bot);
+                    break;
 
-            case "inline_referral_conditions":
-                showReferralTerms(chatId, user, bot);
-                break;
+                case "inline_commissions":
+                    System.out.println("DEBUG: inline_commissions");
+                    showCommissionInfo(chatId, user, bot);
+                    break;
 
-            case "inline_commissions":
-                showCommissionInfo(chatId, user, bot);
-                break;
+                case "inline_other":
+                    System.out.println("DEBUG: inline_other - switching to OTHER_MENU");
+                    user.setState(UserState.OTHER_MENU);
+                    userService.update(user);
+                    showOtherMenu(chatId, user, bot);
+                    break;
 
-            case "inline_other":
-                user.setState(UserState.OTHER_MENU);
-                userService.update(user);
-                showOtherMenu(chatId, user, bot);
-                break;
+                case "inline_contacts":
+                    System.out.println("DEBUG: inline_contacts");
+                    String contactsMessage = "📞 **Контакты поддержки**\n\n" +
+                            "👨‍💼 Оператор: @SUP_CN\n" +
+                            "🛠️ Техническая поддержка: @CN_BUGSY\n\n" +
+                            "💬 Мы всегда готовы помочь!\n" +
+                            "Напишите нам по любым вопросам обмена или работе бота.";
+                    InlineKeyboardMarkup contactsKeyboard = createBackAndMainMenuKeyboard();
+                    bot.sendMessageWithInlineKeyboard(chatId, contactsMessage, contactsKeyboard);
+                    break;
 
-            case "inline_referral":
-                if (user.getUsedReferralCode() != null) {
-                    bot.sendMessage(chatId, "❌ Вы уже использовали реферальный код.");
-                    return;
-                }
-                user.setState(UserState.ENTERING_REFERRAL_CODE);
-                userService.update(user);
-                showEnterReferralCode(chatId, bot);
-                break;
+                case "inline_buy_btc_rub":
+                    System.out.println("DEBUG: inline_buy_btc_rub - switching to ENTERING_BUY_AMOUNT_RUB_BTC");
+                    user.setState(UserState.ENTERING_BUY_AMOUNT_RUB_BTC);
+                    userService.update(user);
+                    currentOperation.put(user.getId(), "BUY_BTC_RUB");
+                    showEnterAmountRubMenu(chatId, user, CryptoCurrency.BTC, bot);
+                    break;
 
-            case "inline_create_referral":
-                user.setState(UserState.CREATING_REFERRAL_CODE);
-                userService.update(user);
-                showCreatingReferralCode(chatId, bot);
-                break;
+                case "inline_buy_ltc_rub":
+                    System.out.println("DEBUG: inline_buy_ltc_rub - switching to ENTERING_BUY_AMOUNT_RUB_LTC");
+                    user.setState(UserState.ENTERING_BUY_AMOUNT_RUB_LTC);
+                    userService.update(user);
+                    currentOperation.put(user.getId(), "BUY_LTC_RUB");
+                    showEnterAmountRubMenu(chatId, user, CryptoCurrency.LTC, bot);
+                    break;
 
-            case "inline_admin":
-                if (adminConfig.isAdmin(user.getId())) {
+                case "inline_buy_xmr_rub":
+                    System.out.println("DEBUG: inline_buy_xmr_rub - switching to ENTERING_BUY_AMOUNT_RUB_XMR");
+                    user.setState(UserState.ENTERING_BUY_AMOUNT_RUB_XMR);
+                    userService.update(user);
+                    currentOperation.put(user.getId(), "BUY_XMR_RUB");
+                    showEnterAmountRubMenu(chatId, user, CryptoCurrency.XMR, bot);
+                    break;
+
+                case "inline_referral":
+                    System.out.println("DEBUG: inline_referral");
+                    if (user.getUsedReferralCode() != null) {
+                        bot.sendMessage(chatId, "❌ Вы уже использовали реферальный код.");
+                        return;
+                    }
+                    user.setState(UserState.ENTERING_REFERRAL_CODE);
+                    userService.update(user);
+                    showEnterReferralCode(chatId, bot);
+                    break;
+
+                case "inline_create_referral":
+                    System.out.println("DEBUG: inline_create_referral");
+                    user.setState(UserState.CREATING_REFERRAL_CODE);
+                    userService.update(user);
+                    showCreatingReferralCode(chatId, bot);
+                    break;
+
+                case "inline_admin":
+                    System.out.println("DEBUG: inline_admin");
+                    if (adminConfig.isAdmin(user.getId())) {
+                        user.setState(UserState.ADMIN_MAIN_MENU);
+                        userService.update(user);
+                        showAdminMainMenu(chatId, bot);
+                    } else {
+                        bot.sendMessage(chatId, "❌ Доступ запрещен");
+                    }
+                    break;
+
+                // === МЕНЮ ПОКУПКИ ===
+                case "inline_buy_rub":
+                    System.out.println("DEBUG: inline_buy_rub - switching to ENTERING_BUY_AMOUNT_RUB");
+                    user.setState(UserState.ENTERING_BUY_AMOUNT_RUB);
+                    userService.update(user);
+                    currentOperation.put(user.getId(), "BUY_RUB");
+                    showEnterAmountMenuRub(chatId, user, bot);
+                    break;
+
+                case "inline_buy_menu":
+                    System.out.println("DEBUG: inline_buy_menu - switching to BUY_MENU");
+                    user.setState(UserState.BUY_MENU);
+                    userService.update(user);
+                    showBuyMenu(chatId, bot);
+                    break;
+
+
+                case "inline_buy_btc":
+                    System.out.println("DEBUG: inline_buy_btc - switching to CHOOSING_INPUT_METHOD");
+                    user.setState(UserState.CHOOSING_INPUT_METHOD);
+                    userService.update(user);
+                    currentOperation.put(user.getId(), "BUY_BTC");
+                    showInputMethodMenu(chatId, user, CryptoCurrency.BTC, bot);
+                    break;
+
+                case "inline_buy_ltc":
+                    System.out.println("DEBUG: inline_buy_ltc - switching to CHOOSING_INPUT_METHOD");
+                    user.setState(UserState.CHOOSING_INPUT_METHOD);
+                    userService.update(user);
+                    currentOperation.put(user.getId(), "BUY_LTC");
+                    showInputMethodMenu(chatId, user, CryptoCurrency.LTC, bot);
+                    break;
+
+                case "inline_buy_xmr":
+                    System.out.println("DEBUG: inline_buy_xmr - switching to CHOOSING_INPUT_METHOD");
+                    user.setState(UserState.CHOOSING_INPUT_METHOD);
+                    userService.update(user);
+                    currentOperation.put(user.getId(), "BUY_XMR");
+                    showInputMethodMenu(chatId, user, CryptoCurrency.XMR, bot);
+                    break;
+
+
+                // === НАВИГАЦИЯ ===
+                case "inline_back":
+                    System.out.println("DEBUG: inline_back - handling back button");
+                    handleBackButton(chatId, user, bot);
+                    break;
+
+                case "inline_main_menu":
+                    System.out.println("DEBUG: inline_main_menu - switching to MAIN_MENU");
+                    processMainMenu(chatId, user, bot);
+                    break;
+
+                // === АДМИН ПАНЕЛЬ ===
+                // В методе processInlineButton добавьте:
+                case "inline_admin_all":
+                    System.out.println("DEBUG: inline_admin_all - switching to ADMIN_VIEW_ALL_APPLICATIONS");
+                    adminAllApplicationsPage.put(user.getId(), 0); // Сбрасываем на первую страницу
+                    user.setState(UserState.ADMIN_VIEW_ALL_APPLICATIONS);
+                    userService.update(user);
+                    showAllApplications(chatId, user, bot);
+                    break;
+
+                case "inline_admin_active":
+                    System.out.println("DEBUG: inline_admin_active - switching to ADMIN_VIEW_ACTIVE_APPLICATIONS");
+                    adminActiveApplicationsPage.put(user.getId(), 0); // Сбрасываем на первую страницу
+                    user.setState(UserState.ADMIN_VIEW_ACTIVE_APPLICATIONS);
+                    userService.update(user);
+                    showActiveApplications(chatId, user, bot);
+                    break;
+// Обработка пагинации
+                case "inline_admin_page_info":
+                    // Просто обновляем текущую страницу
+                    if (user.getState() == UserState.ADMIN_VIEW_ALL_APPLICATIONS) {
+                        showAllApplications(chatId, user, bot);
+                    } else if (user.getState() == UserState.ADMIN_VIEW_ACTIVE_APPLICATIONS) {
+                        showActiveApplications(chatId, user, bot);
+                    }
+                    break;
+
+                case "inline_admin_my_applications":
+                    System.out.println("DEBUG: inline_admin_my_applications - switching to ADMIN_MY_APPLICATIONS");
+                    user.setState(UserState.ADMIN_MY_APPLICATIONS);
+                    userService.update(user);
+                    showAdminMyApplications(chatId, user, bot);
+                    break;
+
+                case "inline_admin_search_application":
+                    System.out.println("DEBUG: inline_admin_search_application - switching to ADMIN_SEARCH_APPLICATION");
+                    user.setState(UserState.ADMIN_SEARCH_APPLICATION);
+                    userService.update(user);
+                    lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
+                            "🔍 Введите номер заявки для поиска:", createBackToAdminKeyboard()));
+                    break;
+
+
+                case "inline_admin_take":
+                    System.out.println("DEBUG: inline_admin_take - taking application");
+                    processTakeApplication(chatId, user, bot, callbackQueryId);
+                    break;
+
+                case "inline_admin_next":
+                    System.out.println("DEBUG: inline_admin_next - next application");
+                    processNextApplication(chatId, user, bot);
+                    break;
+
+                case "inline_admin_search":
+                    System.out.println("DEBUG: inline_admin_search - switching to ADMIN_VIEW_USER_DETAILS");
+                    user.setState(UserState.ADMIN_VIEW_USER_DETAILS);
+                    userService.update(user);
+                    showAdminUserSearch(chatId, bot);
+                    break;
+
+                case "inline_admin_coupon":
+                    System.out.println("DEBUG: inline_admin_coupon - switching to ADMIN_CREATE_COUPON");
+                    user.setState(UserState.ADMIN_CREATE_COUPON);
+                    userService.update(user);
+                    showCreateCouponMenu(chatId, bot);
+                    break;
+
+                case "inline_admin_users":
+                    System.out.println("DEBUG: inline_admin_users - switching to ADMIN_USERS_MENU");
+                    user.setState(UserState.ADMIN_USERS_MENU);
+                    userService.update(user);
+                    showAdminUsersMenu(chatId, bot);
+                    break;
+
+                case "inline_admin_all_users":
+                    System.out.println("DEBUG: inline_admin_all_users - switching to ADMIN_VIEW_ALL_USERS");
+                    adminAllUsersPage.put(user.getId(), 0); // Сбрасываем на первую страницу
+                    user.setState(UserState.ADMIN_VIEW_ALL_USERS);
+                    userService.update(user);
+                    showAllUsers(chatId, user, bot);
+                    break;
+
+                case "inline_admin_recent_users":
+                    System.out.println("DEBUG: inline_admin_recent_users - switching to ADMIN_VIEW_RECENT_USERS");
+                    user.setState(UserState.ADMIN_VIEW_RECENT_USERS);
+                    userService.update(user);
+                    showRecentUsers(chatId, user, bot);
+                    break;
+
+                case "inline_admin_users_search":
+                    System.out.println("DEBUG: inline_admin_users_search - switching to ADMIN_USERS_SEARCH_USER");
+                    user.setState(UserState.ADMIN_USERS_SEARCH_USER);
+                    userService.update(user);
+                    showAdminUsersSearch(chatId, bot);
+                    break;
+
+                case "inline_admin_commission":
+                    System.out.println("DEBUG: inline_admin_commission - switching to ADMIN_COMMISSION_SETTINGS");
+                    user.setState(UserState.ADMIN_COMMISSION_SETTINGS);
+                    userService.update(user);
+                    showAdminCommissionSettings(chatId, user, bot);
+                    break;
+
+                case "inline_admin_broadcast":
+                    System.out.println("DEBUG: inline_admin_broadcast - switching to ADMIN_BROADCAST_MESSAGE");
+                    user.setState(UserState.ADMIN_BROADCAST_MESSAGE);
+                    userService.update(user);
+                    lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
+                        "📢 Отправьте сообщение для рассылки всем пользователям:",
+                        createBackToAdminKeyboard()));
+                    break;
+
+                case "inline_admin_time":
+                    System.out.println("DEBUG: inline_admin_time");
+                    processAdminTimeFilter(chatId, user, bot);
+                    break;
+
+                case "inline_admin_today":
+                    System.out.println("DEBUG: inline_admin_today");
+                    showApplicationsByPeriod(chatId, user, "today", bot);
+                    break;
+
+                case "inline_admin_week":
+                    System.out.println("DEBUG: inline_admin_week");
+                    showApplicationsByPeriod(chatId, user, "week", bot);
+                    break;
+
+                case "inline_admin_month":
+                    System.out.println("DEBUG: inline_admin_month");
+                    showApplicationsByPeriod(chatId, user, "month", bot);
+                    break;
+
+                case "inline_admin_all_time":
+                    System.out.println("DEBUG: inline_admin_all_time");
+                    showAllApplications(chatId, user, bot);
+                    break;
+
+                case "inline_admin_back":
+                    System.out.println("DEBUG: inline_admin_back - switching to ADMIN_MAIN_MENU");
                     user.setState(UserState.ADMIN_MAIN_MENU);
                     userService.update(user);
                     showAdminMainMenu(chatId, bot);
-                } else {
-                    bot.sendMessage(chatId, "❌ Доступ запрещен");
-                }
-                break;
+                    break;
 
-            // === МЕНЮ ПОКУПКИ ===
-            case "inline_buy_rub":
-                user.setState(UserState.ENTERING_BUY_AMOUNT_RUB);
-                userService.update(user);
-                currentOperation.put(user.getId(), "BUY_RUB");
-                showEnterAmountMenu(chatId, "рублях", bot);
-                break;
-
-            case "inline_buy_btc":
-                user.setState(UserState.ENTERING_BUY_AMOUNT_BTC);
-                userService.update(user);
-                currentOperation.put(user.getId(), "BUY_BTC");
-                showEnterAmountMenu(chatId, "BTC", bot);
-                break;
-
-            case "inline_sell_amount":
-                user.setState(UserState.ENTERING_SELL_AMOUNT);
-                userService.update(user);
-                currentOperation.put(user.getId(), "SELL");
-                showEnterAmountMenu(chatId, "BTC", bot);
-                break;
-
-            // === НАВИГАЦИЯ ===
-            case "inline_back":
-                handleBackButton(chatId, user, bot);
-                break;
-
-            case "inline_main_menu":
-                processMainMenu(chatId, user, bot);
-                break;
-
-            // === АДМИН ПАНЕЛЬ ===
-            case "inline_admin_all":
-                user.setState(UserState.ADMIN_VIEW_ALL_APPLICATIONS);
-                userService.update(user);
-                showAllApplications(chatId, user, bot);
-                break;
-
-            case "inline_admin_active":
-                user.setState(UserState.ADMIN_VIEW_ACTIVE_APPLICATIONS);
-                userService.update(user);
-                showActiveApplications(chatId, user, bot);
-                break;
-
-            case "inline_admin_my_applications":
-                user.setState(UserState.ADMIN_MY_APPLICATIONS);
-                userService.update(user);
-                showAdminMyApplications(chatId, user, bot);
-                break;
-
-            case "inline_admin_next":
-                processNextApplication(chatId, user, bot);
-                break;
-
-            case "inline_admin_take":
-                processTakeApplication(chatId, user, bot, callbackQueryId);
-                break;
-
-            case "inline_admin_search":
-                user.setState(UserState.ADMIN_VIEW_USER_DETAILS);
-                userService.update(user);
-                showAdminUserSearch(chatId, bot);
-                break;
-
-            case "inline_admin_coupon":
-                user.setState(UserState.ADMIN_CREATE_COUPON);
-                userService.update(user);
-                showCreateCouponMenu(chatId, bot);
-                break;
-
-            case "inline_admin_commission":
-                user.setState(UserState.ADMIN_COMMISSION_SETTINGS);
-                userService.update(user);
-                showAdminCommissionSettings(chatId, user, bot);
-                break;
-
-            case "inline_admin_time":
-                processAdminTimeFilter(chatId, user, bot);
-                break;
-
-            case "inline_admin_today":
-                showApplicationsByPeriod(chatId, user, "today", bot);
-                break;
-
-            case "inline_admin_week":
-                showApplicationsByPeriod(chatId, user, "week", bot);
-                break;
-
-            case "inline_admin_month":
-                showApplicationsByPeriod(chatId, user, "month", bot);
-                break;
-
-            case "inline_admin_all_time":
-                showAllApplications(chatId, user, bot);
-                break;
-
-            case "inline_admin_back":
-                user.setState(UserState.ADMIN_MAIN_MENU);
-                userService.update(user);
-                showAdminMainMenu(chatId, bot);
-                break;
-
-            case "inline_admin_coupons":
-                user.setState(UserState.ADMIN_VIEW_COUPONS);
-                userService.update(user);
-                showAdminCouponsMenu(chatId, bot);
-                break;
-
-            case "inline_admin_create_coupon_advanced":
-                user.setState(UserState.ADMIN_CREATE_COUPON_ADVANCED);
-                userService.update(user);
-                showAdminCreateCouponAdvanced(chatId, bot);
-                break;
-
-            case "inline_admin_bonus_manage":
-                user.setState(UserState.ADMIN_MANAGE_BONUS_BALANCE);
-                userService.update(user);
-                showAdminBonusBalanceSearch(chatId, bot);
-                break;
-
-            // === ПОЛЬЗОВАТЕЛЬСКИЕ ФУНКЦИИ ===
-            case "inline_my_applications":
-                user.setState(UserState.VIEWING_APPLICATIONS);
-                userService.update(user);
-                processViewingApplications(chatId, user, bot);
-                break;
-
-            case "inline_my_coupons":
-                user.setState(UserState.VIEWING_COUPONS);
-                userService.update(user);
-                processViewingCoupons(chatId, user, bot);
-                break;
-
-            case "inline_calculator":
-                user.setState(UserState.CALCULATOR_MENU);
-                userService.update(user);
-                showCalculatorMenu(chatId, user, bot);
-                break;
-
-            case "inline_rates":
-                showExchangeRates(chatId, user, bot);
-                break;
-
-            case "inline_profile":
-                showProfile(chatId, user, bot);
-                break;
-
-            case "inline_referral_system":
-                user.setState(UserState.REFERRAL_MENU);
-                userService.update(user);
-                showReferralMenu(chatId, user, bot);
-                break;
-
-            case "inline_calculator_buy":
-                user.setState(UserState.CALCULATOR_BUY);
-                userService.update(user);
-                showCalculatorEnterAmount(chatId, "покупку", bot);
-                break;
-
-            case "inline_calculator_sell":
-                user.setState(UserState.CALCULATOR_SELL);
-                userService.update(user);
-                showCalculatorEnterAmount(chatId, "продажи", bot);
-                break;
-
-            // === СОЗДАНИЕ ЗАЯВКИ ===
-            case "inline_vip_yes":
-                Application applicationYes = temporaryApplications.get(user.getId());
-                if (applicationYes != null) {
-                    applicationYes.setIsVip(true);
-                    applicationYes.setCalculatedGiveValue(applicationYes.getCalculatedGiveValue().add(BigDecimal.valueOf(300)));
-                    showBonusBalanceUsage(chatId, user, applicationYes, bot);
-                    user.setState(UserState.USING_BONUS_BALANCE);
+                case "inline_admin_coupons":
+                    System.out.println("DEBUG: inline_admin_coupons - switching to ADMIN_VIEW_COUPONS");
+                    user.setState(UserState.ADMIN_VIEW_COUPONS);
                     userService.update(user);
-                }
-                break;
+                    showAdminCouponsMenu(chatId, bot);
+                    break;
 
-            case "inline_vip_no":
-                Application applicationNo = temporaryApplications.get(user.getId());
-                if (applicationNo != null) {
-                    applicationNo.setIsVip(false);
-                    showBonusBalanceUsage(chatId, user, applicationNo, bot);
-                    user.setState(UserState.USING_BONUS_BALANCE);
+                case "inline_admin_create_coupon_advanced":
+                    System.out.println("DEBUG: inline_admin_create_coupon_advanced - switching to ADMIN_CREATE_COUPON_ADVANCED");
+                    user.setState(UserState.ADMIN_CREATE_COUPON_ADVANCED);
                     userService.update(user);
-                }
-                break;
+                    showAdminCreateCouponAdvanced(chatId, bot);
+                    break;
 
-            case "inline_apply_coupon":
-                user.setState(UserState.APPLYING_COUPON_FINAL);
-                userService.update(user);
-                showEnterCouponCode(chatId, bot);
-                break;
+                case "inline_admin_bonus_manage":
+                    System.out.println("DEBUG: inline_admin_bonus_manage - switching to ADMIN_MANAGE_BONUS_BALANCE");
+                    user.setState(UserState.ADMIN_MANAGE_BONUS_BALANCE);
+                    userService.update(user);
+                    showAdminBonusBalanceSearch(chatId, bot);
+                    break;
 
-            case "inline_skip_coupon":
-                Application applicationSkip = temporaryApplications.get(user.getId());
-                if (applicationSkip != null) {
-                    showFinalApplicationConfirmation(chatId, user, applicationSkip, bot);
-                }
-                break;
+                // === ПОЛЬЗОВАТЕЛЬСКИЕ ФУНКЦИИ ===
+                case "inline_my_applications":
+                    System.out.println("DEBUG: inline_my_applications - switching to VIEWING_APPLICATIONS");
+                    user.setState(UserState.VIEWING_APPLICATIONS);
+                    userService.update(user);
+                    processViewingApplications(chatId, user, bot);
+                    break;
 
-            case "inline_confirm_application":
-                Application applicationConfirm = temporaryApplications.get(user.getId());
-                if (applicationConfirm != null) {
-                    createApplicationFinal(chatId, user, applicationConfirm, bot);
-                }
-                break;
+                case "inline_my_coupons":
+                    System.out.println("DEBUG: inline_my_coupons - switching to VIEWING_COUPONS");
+                    user.setState(UserState.VIEWING_COUPONS);
+                    userService.update(user);
+                    processViewingCoupons(chatId, user, bot);
+                    break;
 
-            case "inline_cancel_application":
-                temporaryApplications.remove(user.getId());
-                bot.sendMessage(chatId, "❌ Создание заявки отменено.");
-                processMainMenu(chatId, user, bot);
-                break;
+                case "inline_calculator":
+                    System.out.println("DEBUG: inline_calculator - switching to CALCULATOR_MENU");
+                    user.setState(UserState.CALCULATOR_MENU);
+                    userService.update(user);
+                    showCalculatorMenu(chatId, user, bot);
+                    break;
 
-            default:
-                bot.sendMessage(chatId, "❌ Неизвестная команда");
-                processMainMenu(chatId, user, bot);
+                case "inline_rates":
+                    System.out.println("DEBUG: inline_rates");
+                    showExchangeRates(chatId, user, bot);
+                    break;
+
+                case "inline_profile":
+                    System.out.println("DEBUG: inline_profile");
+                    showProfile(chatId, user, bot);
+                    break;
+
+                case "inline_referral_system":
+                    System.out.println("DEBUG: inline_referral_system - switching to REFERRAL_MENU");
+                    user.setState(UserState.REFERRAL_MENU);
+                    userService.update(user);
+                    showReferralMenu(chatId, user, bot);
+                    break;
+
+                case "inline_calculator_buy":
+                    System.out.println("DEBUG: inline_calculator_buy - switching to CALCULATOR_BUY");
+                    user.setState(UserState.CALCULATOR_BUY);
+                    userService.update(user);
+                    showCalculatorEnterAmount(chatId, "покупку", bot);
+                    break;
+
+
+                // === СОЗДАНИЕ ЗАЯВКИ ===
+                case "inline_vip_yes":
+                    System.out.println("DEBUG: inline_vip_yes");
+                    Application applicationYes = temporaryApplications.get(user.getId());
+                    if (applicationYes != null) {
+                        applicationYes.setIsVip(true);
+                        applicationYes.setCalculatedGiveValue(applicationYes.getCalculatedGiveValue().add(BigDecimal.valueOf(300)));
+                        showBonusBalanceUsage(chatId, user, applicationYes, bot);
+                        user.setState(UserState.USING_BONUS_BALANCE);
+                        userService.update(user);
+                    }
+                    break;
+
+                case "inline_vip_no":
+                    System.out.println("DEBUG: inline_vip_no");
+                    Application applicationNo = temporaryApplications.get(user.getId());
+                    if (applicationNo != null) {
+                        applicationNo.setIsVip(false);
+                        showBonusBalanceUsage(chatId, user, applicationNo, bot);
+                        user.setState(UserState.USING_BONUS_BALANCE);
+                        userService.update(user);
+                    }
+                    break;
+
+                case "inline_apply_coupon":
+                    System.out.println("DEBUG: inline_apply_coupon - switching to APPLYING_COUPON_FINAL");
+                    user.setState(UserState.APPLYING_COUPON_FINAL);
+                    userService.update(user);
+                    showEnterCouponCode(chatId, bot);
+                    break;
+
+                case "inline_skip_coupon":
+                    System.out.println("DEBUG: inline_skip_coupon");
+                    Application applicationSkip = temporaryApplications.get(user.getId());
+                    if (applicationSkip != null) {
+                        showFinalApplicationConfirmation(chatId, user, applicationSkip, bot);
+                    }
+                    break;
+
+                case "inline_confirm_application":
+                    System.out.println("DEBUG: inline_confirm_application");
+                    Application applicationConfirm = temporaryApplications.get(user.getId());
+                    if (applicationConfirm != null) {
+                        createApplicationFinal(chatId, user, applicationConfirm, bot);
+                    }
+                    break;
+
+                case "inline_cancel_application":
+                    System.out.println("DEBUG: inline_cancel_application");
+                    temporaryApplications.remove(user.getId());
+                    bot.sendMessage(chatId, "❌ Создание заявки отменено.");
+                    processMainMenu(chatId, user, bot);
+                    break;
+
+                default:
+                    System.out.println("DEBUG: UNKNOWN CALLBACK: " + callbackData);
+                    if (callbackQueryId != null) {
+                        bot.answerCallbackQuery(callbackQueryId, "❌ Неизвестная команда");
+                    }
+                    bot.sendMessage(chatId, "❌ Неизвестная команда");
+                    processMainMenu(chatId, user, bot);
+            }
+        } catch (Exception e) {
+            System.out.println("ERROR in processInlineButton: " + e.getMessage());
+            e.printStackTrace();
+
+            if (callbackQueryId != null) {
+                bot.answerCallbackQuery(callbackQueryId, "❌ Ошибка обработки команды");
+            }
+
+            String errorMessage = "❌ Произошла ошибка. Возврат в главное меню.";
+            bot.sendMessage(chatId, errorMessage);
+            processMainMenu(chatId, user, bot);
+        }
+
+        System.out.println("=== PROCESS_INLINE_BUTTON END ===");
+        System.out.println("Final State: " + user.getState());
+        System.out.println("===================================");
+    }
+
+    private UserState getBuyCryptoState(CryptoCurrency crypto) {
+        switch (crypto) {
+            case BTC: return UserState.ENTERING_BUY_AMOUNT_BTC;
+            case LTC: return UserState.ENTERING_BUY_AMOUNT_LTC;
+            case XMR: return UserState.ENTERING_BUY_AMOUNT_XMR;
+            default: return UserState.ENTERING_BUY_AMOUNT_BTC;
         }
     }
+
+    private UserState getBuyRubState(CryptoCurrency crypto) {
+        switch (crypto) {
+            case BTC: return UserState.ENTERING_BUY_AMOUNT_RUB_BTC;
+            case LTC: return UserState.ENTERING_BUY_AMOUNT_RUB_LTC;
+            case XMR: return UserState.ENTERING_BUY_AMOUNT_RUB_XMR;
+            default: return UserState.ENTERING_BUY_AMOUNT_RUB_BTC;
+        }
+    }
+
 
     private void processBonusUsageFromCallback(Long chatId, User user, String callbackData, MyBot bot, String callbackQueryId) {
         try {
@@ -1809,49 +2877,6 @@ public class MessageProcessor {
     }
 
 
-
-    private void processTakeApplication(Long chatId, User admin, MyBot bot, String callbackQueryId) {
-        List<Application> activeApplications = applicationService.findActiveApplications();
-
-        if (activeApplications.isEmpty()) {
-            if (callbackQueryId != null) {
-                bot.answerCallbackQuery(callbackQueryId, "📭 Нет активных заявок");
-            }
-            return;
-        }
-
-        // Берем первую заявку из отсортированного списка (VIP сначала)
-        Application nextApplication = activeApplications.stream()
-                .sorted(Comparator.comparing(Application::getIsVip).reversed()
-                        .thenComparing(Application::getCreatedAt))
-                .findFirst()
-                .orElse(null);
-
-        if (nextApplication == null) {
-            if (callbackQueryId != null) {
-                bot.answerCallbackQuery(callbackQueryId, "❌ Ошибка при поиске заявки");
-            }
-            return;
-        }
-
-        // Устанавливаем статус "В работе" и привязываем админа
-        nextApplication.setStatus(ApplicationStatus.IN_WORK);
-        nextApplication.setAdminId(admin.getId());
-        applicationService.update(nextApplication);
-
-        selectedApplication.put(admin.getId(), nextApplication.getId());
-        admin.setState(UserState.ADMIN_VIEWING_APPLICATION_DETAILS);
-        userService.update(admin);
-
-        if (callbackQueryId != null) {
-            bot.answerCallbackQuery(callbackQueryId, "✅ Заявка взята в работу");
-        }
-
-        // ПОКАЗЫВАЕМ МЕНЮ УПРАВЛЕНИЯ ВМЕСТО ПРОСТО ДЕТАЛЕЙ
-        showAdminApplicationManagementMenu(chatId, admin, nextApplication, bot);
-    }
-
-
     private void processBonusUsage(Long chatId, User user, String text, MyBot bot, String callbackQueryId) {
         Application application = temporaryApplications.get(user.getId());
 
@@ -1899,13 +2924,28 @@ public class MessageProcessor {
                 return;
             }
 
+            // Сохраняем использованный бонусный баланс
             application.setUsedBonusBalance(bonusAmount);
-            application.setCalculatedGiveValue(application.getCalculatedGiveValue().subtract(bonusAmount));
+
+            // Уменьшаем сумму заявки на размер бонуса
+            boolean isBuy = application.getUserValueGetType() == ValueType.BTC ||
+                           application.getUserValueGetType() == ValueType.LTC ||
+                           application.getUserValueGetType() == ValueType.XMR;
+            if (isBuy) {
+                // При покупке: уменьшаем сумму к оплате
+                application.setCalculatedGiveValue(application.getCalculatedGiveValue().subtract(bonusAmount));
+            } else {
+                // При продаже: увеличиваем получаемую сумму
+                application.setCalculatedGetValue(application.getCalculatedGetValue().add(bonusAmount));
+            }
+
+            temporaryApplications.put(user.getId(), application);
 
             if (callbackQueryId != null) {
                 bot.answerCallbackQuery(callbackQueryId, "✅ Бонусный баланс применен");
             }
 
+            // ПЕРЕХОДИМ К ПРИМЕНЕНИЮ КУПОНА
             showCouponApplication(chatId, user, application, bot);
             user.setState(UserState.APPLYING_COUPON_FINAL);
             userService.update(user);
@@ -1969,7 +3009,6 @@ public class MessageProcessor {
         int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
         lastMessageId.put(chatId, messageId);
     }
-
     private void showAdminUserSearch(Long chatId, MyBot bot) {
         String message = "Введите username (без @) или ID пользователя:";
 
@@ -1985,8 +3024,6 @@ public class MessageProcessor {
         int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
         lastMessageId.put(chatId, messageId);
     }
-
-
     private void showEnterReferralCode(Long chatId, MyBot bot) {
         String message = "Введите реферальный код:";
 
@@ -2075,7 +3112,7 @@ public class MessageProcessor {
                 return;
             }
 
-            int queuePosition = calculateQueuePosition(application) + 10;
+            int queuePosition = calculateQueuePosition(application);
             String message = "📊 Ваша заявка находится на " + queuePosition + " месте в очереди";
 
             bot.answerCallbackQuery(callbackQueryId, message);
@@ -2128,129 +3165,131 @@ public class MessageProcessor {
     }
 
     private void showReferralTerms(Long chatId, User user, MyBot bot) {
-        String termsMessage = """
+        String referralProgramMessage = """
+        💼 Реферальная программа Cosa Nostra Change24
+        
+        🌟 Стань частью семьи 💰 Зарабатывай на каждом обмене своих друзей и строй собственную сеть рефералов.
 
-        📖 1. Общие положения
-        
-        🏢 1.1. COSA NOSTRA change24 — бренд, предоставляющий платформу для обмена цифровых и электронных валют между пользователями.
-        
-        🤖 1.2. Используя бот COSA NOSTRA change24 BOT, пользователь подтверждает согласие с данными правилами и обязуется соблюдать действующее законодательство.
-        
-        🚫 1.3. Незаконные операции, отмывание денег и действия с чужими реквизитами запрещены.
-        
-        🔍 1.4. Администрация имеет право запрашивать документы, проводить верификацию и приостанавливать операции при подозрении на нарушение правил.
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        ⚙️ УРОВНИ СИСТЕМЫ
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-        📚 2. Термины и определения
-        
-        💻 2.1. Сервис — онлайн-платформа для проведения p2p-операций.
-        👤 2.2. Пользователь — физическое лицо, использующее сервис.
-        ₿ 2.3. Цифровая валюта — криптовалюты (Bitcoin, Ethereum, Litecoin и др.).
-        💳 2.4. Электронная валюта — средства на счетах Perfect Money, Advanced Cash и других систем.
-        🔄 2.5. Платежная система — программное обеспечение для проведения расчетов.
-        📝 2.6. Заявка — запрос пользователя на проведение операции.
-        🤝 2.7. Партнер — лицо, привлекающее новых клиентов.
-        📊 2.8. Курс — установленное обменное соотношение валют.
+        👤 1 уровень: Получай 3% с каждого обмена приглашённого тобой пользователя
+        👥 2 уровень: Получай 0.5% с обменов тех, кого пригласили твои рефералы
 
-        🔐 3. Учетная запись и верификация
-        
-        👨‍🎓 3.1. Регистрация доступна только лицам старше 18 лет.
-        
-        ✅ 3.2. Пользователь предоставляет достоверные данные и не использует чужие учетные записи.
-        
-        📄 3.3. Сервис может запросить паспорт, фото карты (без конфиденциальных данных), номер телефона или иные документы.
-        
-        ⏳ 3.4. При отказе от верификации сервис имеет право отменить заявку и вернуть средства. Срок возврата:
-           💰 фиат — от 5 до 185 рабочих дней,
-           ₿ криптовалюта — до 365 рабочих дней. 
-           💸 Комиссия при возврате — 20%.
-        
-        🔒 3.5. Пользователь несет ответственность за безопасность данных.
-        
-        👤 3.6. Аккаунт используется только владельцем.
-        
-        🚨 3.7. О подозрительных действиях необходимо немедленно сообщать администрации.
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        💸 БОНУС ЗА ПРИГЛАШЕНИЕ
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-        💼 4. Услуги сервиса
-        
-        📱 4.1. Все операции проводятся на основании заявки через бот.
-        
-        ⚖️ 4.2. Пользователь подтверждает законность происхождения средств.
-        
-        🔄 4.3. COSA NOSTRA change24 предоставляет услуги обмена, покупки и продажи валют.
-        
-        💰 4.4. Комиссия указывается при оформлении заявки.
-        
-        ✅ 4.5. Обязательства считаются выполненными после списания средств со счета сервиса.
-        
-        📡 4.6. Услуги предоставляются без гарантий непрерывности.
+        🔹 Ты получаешь: +250₽ на реферальный баланс, когда реферал достигнет:
+           • 10 000₽ объёма ИЛИ
+           • 5 обменов
 
-        ⚖️ 5. Ответственность сторон
-        
-        💼 5.1. Сервис несет ответственность только в пределах суммы заявки.
-        
-        🌐 5.2. COSA NOSTRA change24 не отвечает за убытки, вызванные действиями третьих лиц или сбоями сетей.
-        
-        ❌ 5.3. Операции без оформленной заявки могут быть аннулированы.
-        
-        🛑 5.4. Администрация имеет право отказать в услугах без объяснения причин.
-        
-        ⏸️ 5.5. Подозрительные операции могут быть приостановлены.
+        🔹 Твой реферал получает: +100 кешбэк-рублей после первого обмена на сумму от 2000₽
 
-        Продолжение в следующем сообщении...
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        📅 БОНУСЫ ЗА КОЛИЧЕСТВО ОБМЕНОВ В МЕСЯЦ
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        🎯 25 обменов → 250₽
+        🎯 50 обменов → 500₽ + +0.25% к 1 ур.
+        🎯 75 обменов → 750₽ + +0.1% ко 2 ур.
+        🎯 100 обменов → 1000₽ + +0.25% к 1 ур.
+        🎯 125 обменов → 1250₽ + +0.1% ко 2 ур.
+        🎯 150 обменов → 1500₽
+        🎯 200 обменов → 2000₽
+
+        📈 +50 обменов сверх - +10₽ за каждый дополнительный обмен
+
+        💡 Статистика обновляется каждый месяц и влияет на следующий
+        (если получил +0.25% - в новом месяце у тебя уже 3.25% на 1 уровне)
         """;
 
         // Отправляем первую часть
-        bot.sendMessage(chatId, termsMessage);
+        bot.sendMessage(chatId, referralProgramMessage);
 
         // Вторая часть
-        String termsMessagePart2 = """
-        🔍 6. Политика AML/KYC
-        
-        🛡️ 6.1. COSA NOSTRA change24 использует AML/KYC-процедуры для предотвращения мошенничества.
-        
-        ✅ 6.2. Все пользователи обязаны проходить верификацию по запросу сервиса.
-        
-        🏛️ 6.3. Данные о транзакциях могут быть переданы государственным органам по запросу.
+        String referralProgramPart2 = """
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        💰 БОНУСЫ ПО ОБЪЁМУ ЗА МЕСЯЦ
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-        🌍 7. Регион обслуживания
-        
-        🇷🇺 7.1. Сервис работает на территории Российской Федерации и Республики Беларусь.
-        
-        🚫 7.2. COSA NOSTRA change24 не предоставляет услуги пользователям из ЕС, США, КНР и других стран.
-        
-        🔒 7.3. При ложной информации о регионе аккаунт подлежит блокировке.
+        💵 250 000₽ → 500₽ + +0.25% к 1 ур.
+        💵 500 000₽ → 1000₽ + +0.1% ко 2 ур.
+        💵 750 000₽ → 1500₽ + +0.25% к 1 ур.
+        💵 1 000 000₽ → 2000₽ + +0.1% ко 2 ур.
+        💵 1 250 000₽ → 3000₽
 
-        💰 8. Налогообложение
-        
-        📊 8.1. Сервис не является налоговым агентом.
-        
-        📝 8.2. Пользователь самостоятельно декларирует доходы, полученные от операций.
+        📈 Статистика обновляется ежемесячно и действует на следующий месяц
 
-        🔒 9. Конфиденциальность
-        
-        🛡️ 9.1. Персональные данные пользователей защищены и не передаются третьим лицам без законных оснований.
-        
-        🔐 9.2. COSA NOSTRA change24 применяет меры для защиты информации от несанкционированного доступа.
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        🏆 РАЗОВЫЕ БОНУСЫ ЗА КОЛИЧЕСТВО ОБМЕНОВ (ВСЁ ВРЕМЯ)
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-        📝 10. Дополнительные правила
-        
-        👶 — Обмен доступен лицам от 18 лет.
-        🗳️ — Политическая пропаганда и мошенничество запрещены.
-        👥 — Запрещены обмены с третьими лицами.
-        💸 — COSA NOSTRA change24 не несет ответственности за переводы на реквизиты, не указанные ботом.
-        🏦 — Переводы осуществляются строго в тот банк, который выдан ботом.
-        💬 — Комментарии о криптовалюте при переводе запрещены.
-        🎁 — Средства, отправленные по неверным реквизитам, считаются безвозвратным подарком владельцу счета.
+        🔢 50 обменов → 500₽
+        🔢 100 обменов → 1000₽
+        🔢 150 обменов → 1500₽
+        🔢 200 обменов → 2000₽
+        🔢 250 обменов → 2500₽
+        🔢 300 обменов → 3000₽
+        🔢 350 обменов → 3500₽
+        🔢 400 обменов → 4000₽
 
-        📞 Актуальные контакты:
-        🤖 БОТ/ЧАТ/ОТЗЫВЫ/ПОДДЕРЖКА :@CN_FEEDBACKBOT
-        ☎️ Оператор 24/7: @SUP_CN
+        💬 За каждые +100 обменов - +1500₽ на баланс
+        📊 Пример: 500 обменов = +1500₽, 600 обменов = ещё +1500₽
+
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        💎 РАЗОВЫЕ БОНУСЫ ПО ОБЪЁМУ (ВСЁ ВРЕМЯ)
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        💵 500 000₽ → 500₽
+        💵 1 000 000₽ → 1000₽
+        💵 1 500 000₽ → 1500₽
+        💵 2 000 000₽ → 2000₽
+        💵 2 500 000₽ → 2500₽
+        💵 3 000 000₽ → 3000₽
+        💵 3 500 000₽ → 3500₽
+        💵 4 000 000₽ → 4000₽
+
+        📈 За каждый новый порог +1 000 000₽ - бонус 1500₽
+        📊 Пример: 5 млн₽ = 1500₽, 6 млн₽ = ещё 1500₽
+        """;
+
+        bot.sendMessage(chatId, referralProgramPart2);
+
+        // Третья часть
+        String referralProgramPart3 = """
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        👑 ЕЖЕМЕСЯЧНЫЕ НОМИНАЦИИ
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        🏅 1. Больше всего новых рефералов - 3500₽
+        💰 2. Самый крупный объём обменов - 3500₽
+        🔁 3. Наибольшее количество обменов - 3500₽
+
+        📆 Статистика с 1 по 1 число, выплаты - по итогам месяца
+
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        💬 СТАНЬ РЕФОВОДОМ COSA NOSTRA CHANGE24
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        🎯 Строй свою сеть, как настоящий босс!
+        💰 Зарабатывай на нескольких уровнях одновременно
+        📈 Увеличивай свои проценты с помощью бонусов
+        🏆 Участвуй в ежемесячных соревнованиях
+
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        📞 КОНТАКТЫ ДЛЯ ВОПРОСОВ
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        👨‍💼 Оператор: @SUP_CN
+        🔧 Техподдержка: @CN_BUGSY
+        🚪 Доступ в проект: @COSANOSTRALOBBYBOT
         """;
 
         InlineKeyboardMarkup inlineKeyboard = createReferralTermsKeyboard();
-        bot.sendMessageWithInlineKeyboard(chatId, termsMessagePart2, inlineKeyboard);
+        bot.sendMessageWithInlineKeyboard(chatId, referralProgramPart3, inlineKeyboard);
     }
-
     private InlineKeyboardMarkup createReferralTermsKeyboard() {
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
@@ -2285,39 +3324,68 @@ public class MessageProcessor {
 
 
     private void showMainMenu(Long chatId, User user, MyBot bot) {
-        // Временно убираем фото для теста
+        // Очищаем весь чат кроме приветственного сообщения при возврате в главное меню
+        clearChatExceptApplications(chatId, bot);
+
+        // Удаляем предыдущее фото приветствия, если оно было
+        Integer previousPhotoId = welcomePhotoId.get(chatId);
+        if (previousPhotoId != null) {
+            bot.deleteMessage(chatId, previousPhotoId);
+            welcomePhotoId.remove(chatId);
+        }
+
+        // Сначала отправляем фото приветствия
+        try {
+            // Вариант 1: Отправляем фото из URL
+            String photoUrl = "https://ibb.co/tpmS6407"; // Фото главного меню
+            int photoMessageId = bot.sendPhotoFromUrl(chatId, photoUrl, null);
+            welcomePhotoId.put(chatId, photoMessageId);
+            addMessageToHistory(chatId, photoMessageId);
+
+            // Вариант 2: Отправляем фото из файла в ресурсах (раскомментируйте если нужно)
+            // File photoFile = new File("src/main/resources/welcome.jpg"); // 🔴 Укажите путь к вашему фото
+            // int photoMessageId = bot.sendPhoto(chatId, photoFile, null);
+            // welcomePhotoId.put(chatId, photoMessageId);
+        } catch (Exception e) {
+            // Если фото не удалось отправить, продолжаем без него
+            System.out.println("Не удалось отправить фото главного меню: " + e.getMessage());
+        }
+
         String message = """
-        💼 Добро пожаловать в обменник — 𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻️
-        🚀 Быстрый и надёжный обмен RUB → BTC / LTC / XMR 
-        ⚖️ ЛУЧШИЕ курсы, без задержек и скрытых комиссий.
-        💸 БОНУС: после каждой операции получаете 3% кешбэк на свой баланс!
-
-        📲 Как всё работает: 
-        1️⃣ Нажмите 💵 Купить или 💰 Продать 
-        2️⃣ Введите нужную сумму 🪙 
+        💼 Добро пожаловать в обменник - 𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻\n
+        🚀 Быстрый и надёжный обмен RUB → BTC / LTC / XMR
+        ⚖️ ЛУЧШИЕ курсы, без задержек и скрытых комиссий\n
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n
+        📲 Как всё работает:
+        1️⃣ Нажмите 💰Купить 
+        2️⃣ Введите нужную сумму 🪙
         3️⃣ Укажите свой кошелёк 🔐
-        4️⃣ Выберите приоритет (🔹обычный / 👑 VIP) 
-        5️⃣ Подтвердите заявку ✅ 
-        6️⃣ Если готовы оплачивать — перешлите заявку оператору ☎️
-
-        ⚙️ Дополнительная информация: 
-        👑 VIP-приоритет — всего 300₽, заявка проходит мгновенно
-        📊 Загруженность сети BTC: низкая 🚥 
-        🕒 Время подтверждения: 5–20 минут 
-
-        💀 Переходник (ЧАТ/БОТ/ОТЗЫВЫ/РЕЗЕРВ) @COSANOSTRALOBBYBOT 
-        🧰 Техподдержка 24/7: @CN_BUGSY всегда онлайн, решим любой вопрос 🔧
-        ☎️ ОПЕРАТОР: @SUP_CN
-
-        🔴 ОПЕРАТОР НИКОГДА НЕ ПИШЕТ ПЕРВЫЙ🔴
-        🔴 ВСЕГДА СВЕРЯЙТЕ КОНТАКТЫ
-
-        𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻️— тут уважают тех, кто ценит скорость, честность и результат. 🤝
+        4️⃣ Выберите приоритет (🔹обычный / 👑 VIP)
+        5️⃣ Подтвердите заявку ✅
+        6️⃣ Если готовы оплачивать - перешлите заявку оператору ☎️\n
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n
+        ⚙️ Дополнительная информация:
+        • 👑 VIP-приоритет - всего 300₽, заявка проходит мгновенно
+        • 📊 Загруженность сети BTC: низкая 🚥
+        • 🕒 Время подтверждения: 5–20 минут
+        • 📜 Правила сообщества: https://telegra.ph/Pravila-obshcheniya-v-soobshchestve-obmennika-11-16\n
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n
+        📞 Контакты:
+        • 💀 Доступ в проект (ЧАТ/БОТ/ОТЗЫВЫ/РЕЗЕРВ): @COSANOSTRALOBBYBOT
+        • 🧰 Техподдержка 24/7: @CN_BUGSY всегда онлайн, решим любой вопрос 🔧
+        • ☎️ ОПЕРАТОР: @SUP_CN
+        • ✍️ Наши отзывы: https://t.me/CNchange24\n
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n
+        ⚠️ ВАЖНО:
+        🔴 ОПЕРАТОР НИКОГДА НЕ ПИШЕТ ПЕРВЫЙ
+        🔴 ВСЕГДА СВЕРЯЙТЕ КОНТАКТЫ\n
+        𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻️ - тут уважают тех, кто ценит скорость, честность и результат. 🤝
         """;
 
         InlineKeyboardMarkup inlineKeyboard = createMainMenuInlineKeyboard(user);
         int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
         lastMessageId.put(chatId, messageId);
+        addMessageToHistory(chatId, messageId);
     }
 
 
@@ -2333,8 +3401,8 @@ public class MessageProcessor {
         switch (text) {
             case "👑 Да, добавить VIP":
                 application.setIsVip(true);
-                // ДОБАВЛЯЕМ VIP стоимость
-                application.setCalculatedGiveValue(application.getCalculatedGiveValue().add(VIP_COST)); // ИЗМЕНЕНО
+                // Добавляем VIP стоимость к сумме заявки
+                application.setCalculatedGiveValue(application.getCalculatedGiveValue().add(VIP_COST));
                 break;
             case "🔹 Нет, обычный приоритет":
                 application.setIsVip(false);
@@ -2342,7 +3410,7 @@ public class MessageProcessor {
             case "🔙 Назад":
                 user.setState(UserState.ENTERING_WALLET);
                 userService.update(user);
-                processEnteringWallet(chatId, user, "🔙 Назад", bot); // Эта логика "Назад" может быть неверной, но я ее не трогаю
+                showWalletInput(chatId, bot, user);
                 return;
             case "🔙 Главное меню":
                 processMainMenu(chatId, user, bot);
@@ -2353,7 +3421,7 @@ public class MessageProcessor {
                 return;
         }
 
-        // ПЕРЕХОДИМ К ИСПОЛЬЗОВАНИЮ БОНУСНОГО БАЛАНСА
+        // ПОСЛЕ ВЫБОРА VIP ПЕРЕХОДИМ К ИСПОЛЬЗОВАНИЮ БОНУСНОГО БАЛАНСА
         showBonusBalanceUsage(chatId, user, application, bot);
         user.setState(UserState.USING_BONUS_BALANCE);
         userService.update(user);
@@ -2425,24 +3493,58 @@ public class MessageProcessor {
             return;
         }
 
-        switch (text) {
-            case "Применить купон":
-                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                        "🎫 Введите код купона:", createBackInlineKeyboard()));
-                break;
-            case "Пропустить":
-                showFinalApplicationConfirmation(chatId, user, application, bot);
-                break;
-            case "🔙 Назад":
-                user.setState(UserState.CONFIRMING_VIP);
-                userService.update(user);
-                processVipConfirmation(chatId, user, "🔙 Назад", bot);
-                break;
-            case "🔙 Главное меню":
-                processMainMenu(chatId, user, bot);
-                break;
-            default:
-                processCouponCodeFinal(chatId, user, application, text, bot);
+        if (text.equals("🔙 Назад")) {
+            user.setState(UserState.USING_BONUS_BALANCE);
+            userService.update(user);
+            showBonusBalanceUsage(chatId, user, application, bot);
+            return;
+        }
+
+        if (text.equals("🔙 Главное меню")) {
+            processMainMenu(chatId, user, bot);
+            return;
+        }
+
+        if (text.equals("⏭️ Пропустить")) {
+            // Пропускаем применение купона и переходим к финальному подтверждению
+            showFinalApplicationConfirmation(chatId, user, application, bot);
+            user.setState(UserState.CONFIRMING_APPLICATION);
+            userService.update(user);
+            return;
+        }
+
+        // Обработка ввода кода купона
+        try {
+            Coupon coupon = couponService.findValidCoupon(text.trim(), user)
+                    .orElseThrow(() -> new IllegalArgumentException("Недействительный купон или купон уже использован"));
+
+            // Применяем купон к заявке
+            application.setAppliedCoupon(coupon);
+            temporaryApplications.put(user.getId(), application);
+
+            String message = String.format("""
+                ✅ Купон применен!
+                
+                🎫 Код: %s
+                💰 Скидка: %s
+                """,
+                    coupon.getCode(),
+                    coupon.getDiscountPercent() != null ?
+                            coupon.getDiscountPercent() + "%" :
+                            formatRubAmount(coupon.getDiscountAmount())
+            );
+
+            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createFinalConfirmationInlineKeyboard()));
+
+            // Показываем финальное подтверждение с учетом купона
+            showFinalApplicationConfirmation(chatId, user, application, bot);
+            user.setState(UserState.CONFIRMING_APPLICATION);
+            userService.update(user);
+
+        } catch (IllegalArgumentException e) {
+            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
+                    "❌ " + e.getMessage() + "\n\nПопробуйте другой код или нажмите 'Пропустить'",
+                    createCouponApplicationInlineKeyboard()));
         }
     }
 
@@ -2462,65 +3564,65 @@ public class MessageProcessor {
     }
 
     private void showFinalApplicationConfirmation(Long chatId, User user, Application application, MyBot bot) {
-        String operationType = application.getUserValueGetType() == ValueType.BTC ? "покупку" : "продажу";
-        String walletLabel = application.getUserValueGetType() == ValueType.BTC ? "🔐 Bitcoin-кошелек" : "💳 Реквизиты для выплаты";
+        boolean isBuy = application.getUserValueGetType() == ValueType.BTC || application.getUserValueGetType() == ValueType.LTC || application.getUserValueGetType() == ValueType.XMR ;
+        String operationType = isBuy ? "покупку" : "продажу";
+        String cryptoName = application.getCryptoCurrencySafe().getDisplayName();
+
+        // Рассчитываем финальные суммы с учетом бонусов и купонов
+        BigDecimal finalGiveValue = application.getCalculatedGiveValue();
+        BigDecimal finalGetValue = application.getCalculatedGetValue();
 
         StringBuilder message = new StringBuilder();
         message.append(String.format("""
-        ✅ Готово к созданию заявки на %s BTC
+        ✅ Готово к созданию заявки на %s %s
 
         💰 Вы отдаете: %s
-        ₿ Вы получаете: %s
+        💰 Вы получаете: %s
 
         """,
                 operationType,
-                application.getUserValueGetType() == ValueType.BTC ?
-                        formatRubAmount(application.getCalculatedGiveValue()) :
-                        formatBtcAmount(application.getCalculatedGiveValue()),
-                application.getUserValueGetType() == ValueType.BTC ?
-                        formatBtcAmount(application.getCalculatedGetValue()) :
-                        formatRubAmount(application.getCalculatedGetValue())
+                cryptoName,
+                isBuy ? formatRubAmount(finalGiveValue) : formatCryptoAmount(finalGiveValue, application.getCryptoCurrencySafe()),
+                isBuy ? formatCryptoAmount(finalGetValue, application.getCryptoCurrencySafe()) : formatRubAmount(finalGetValue)
         ));
 
-        // Добавляем детали операции если есть
-        boolean hasDetails = application.getIsVip() ||
-                application.getAppliedCoupon() != null ||
-                application.getUsedBonusBalance().compareTo(BigDecimal.ZERO) > 0;
+        // Добавляем информацию о примененных бонусах и купонах
+        boolean hasBonuses = application.getUsedBonusBalance().compareTo(BigDecimal.ZERO) > 0;
+        boolean hasCoupon = application.getAppliedCoupon() != null;
+        boolean hasVip = application.getIsVip();
 
-        if (hasDetails) {
+        if (hasVip || hasBonuses || hasCoupon) {
             message.append("━━━━━━━━━━━━━━━━━━━━━━━\n");
             message.append("📊 Детали операции\n");
             message.append("━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-            if (application.getIsVip()) {
-                message.append(String.format("• 👑 VIP-приоритет: %s\n",
-                        application.getUserValueGetType() == ValueType.BTC ? "+300 ₽" : "-300 ₽"));
+            if (hasVip) {
+                message.append("• 👑 VIP-приоритет: +300 ₽\n");
             }
 
-            if (application.getAppliedCoupon() != null) {
+            if (hasBonuses) {
+                message.append(String.format("• 🎁 Использовано бонусов: %s\n",
+                        formatRubAmount(application.getUsedBonusBalance())));
+            }
+
+            if (hasCoupon) {
                 Coupon coupon = application.getAppliedCoupon();
                 String discount = coupon.getDiscountPercent() != null ?
                         coupon.getDiscountPercent() + "%" :
                         formatRubAmount(coupon.getDiscountAmount());
                 message.append(String.format("• 🎫 Купон (%s): %s\n", coupon.getCode(), discount));
             }
-
-            if (application.getUsedBonusBalance().compareTo(BigDecimal.ZERO) > 0) {
-                message.append(String.format("• 🎁 Использовано бонусов: %s\n",
-                        formatRubAmount(application.getUsedBonusBalance())));
-            }
             message.append("\n");
         }
 
         message.append(String.format("""
-        %s:
+        🔐 Кошелек/реквизиты:
         `%s`
 
         ⏳ Срок действия: 40 минут
 
         Подтверждаете создание заявки?
         """,
-                walletLabel,
                 application.getWalletAddress()
         ));
 
@@ -2567,14 +3669,8 @@ public class MessageProcessor {
         }
 
         if (text.equals("🔙 Назад")) {
-            if (application.getUserValueGetType() == ValueType.BTC) {
-                user.setState(UserState.BUY_MENU);
-                showBuyMenu(chatId, bot);
-            } else {
-                user.setState(UserState.SELL_MENU);
-                showSellMenu(chatId, bot);
-            }
-            userService.update(user);
+            // Теперь handleBackButton правильно обработает навигацию
+            handleBackButton(chatId, user, bot);
             return;
         }
 
@@ -2583,62 +3679,16 @@ public class MessageProcessor {
             return;
         }
 
-        // Сохраняем кошелек
+        // Сохраняем кошелек/реквизиты
         application.setWalletAddress(text);
+        temporaryApplications.put(user.getId(), application);
 
-        // Форматируем сообщение
-        String amountLabel = application.getUserValueGetType() == ValueType.BTC ? "💸 Сумма к оплате:" : "💰 Сумма к получению:";
-        String amountValue = application.getUserValueGetType() == ValueType.BTC ?
-                formatRubAmount(application.getCalculatedGiveValue()) :
-                formatRubAmount(application.getCalculatedGetValue());
-
-        String vipAmountValue = application.getUserValueGetType() == ValueType.BTC ?
-                formatRubAmount(application.getCalculatedGiveValue().add(VIP_COST)) :
-                formatRubAmount(application.getCalculatedGetValue().subtract(VIP_COST));
-
-        String walletLabel = application.getUserValueGetType() == ValueType.BTC ? "🔐 Bitcoin-кошелек" : "💳 Реквизиты для выплаты";
-
-        String message = String.format("""
-        💰 Подтверждение заявки на %s
-
-        %s %s
-        ⏱ Ожидание обработки: до 15 минут
-        %s:
-        `%s`
-
-        ━━━━━━━━━━━━━━━━━━━━━━━
-        💎 VIP-приоритет (Опция)
-        ━━━━━━━━━━━━━━━━━━━━━━━
-        💰 Стоимость: +%s
-        💵 Итого с VIP: %s
-        ⚡ Результат: отправка в течение 10 минут
-
-        ━━━━━━━━━━━━━━━━━━━━━━━
-        📊 Статус сети Bitcoin
-        ━━━━━━━━━━━━━━━━━━━━━━━
-        • Загруженность: Низкая 🟢
-        • Время подтверждения: 5-20 минут
-
-        👨‍💼 Оператор: @SUP_CN
-
-        Выберите приоритет обработки:
-        """,
-                application.getUserValueGetType() == ValueType.BTC ? "покупку BTC" : "продажу BTC",
-                amountLabel,
-                amountValue,
-                walletLabel,
-                application.getWalletAddress(),
-                formatRubAmount(VIP_COST),
-                vipAmountValue
-        );
-
-        InlineKeyboardMarkup keyboard = createVipConfirmationWithOperatorKeyboard();
-        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, keyboard);
-        lastMessageId.put(chatId, messageId);
-
+        // ПЕРЕХОДИМ К ВЫБОРУ VIP ПРИОРИТЕТА
+        showVipConfirmation(chatId, user, application, bot);
         user.setState(UserState.CONFIRMING_VIP);
         userService.update(user);
     }
+
 
 
     private InlineKeyboardMarkup createVipConfirmationWithOperatorKeyboard() {
@@ -2700,20 +3750,23 @@ public class MessageProcessor {
 
         // Основные кнопки главного меню - ДОБАВЛЯЕМ ОБРАБОТКУ КНОПОК
         switch (text) {
+            case "💰 Купить крипту":
             case "💰 Купить":
-            case "💰 Купить BTC":  // ДОБАВЛЕНО
                 user.setState(UserState.BUY_MENU);
                 userService.update(user);
                 showBuyMenu(chatId, bot);
                 break;
-            case "💸 Продать":
-            case "💸 Продать BTC":  // ДОБАВЛЕНО
-                user.setState(UserState.SELL_MENU);
-                userService.update(user);
-                showSellMenu(chatId, bot);
-                break;
-            case "💳 Комиссии":
+            case "💳 Комиссии":  // ДОБАВЛЕНО: обработка текстовой команды
                 showCommissionInfo(chatId, user, bot);
+                break;
+            case "⚙️ Прочее":
+                user.setState(UserState.OTHER_MENU);
+                userService.update(user);
+                showOtherMenu(chatId, user, bot);
+                break;
+            case "💎 Главное меню":
+                deletePreviousBotMessage(chatId, bot);
+                showMainMenu(chatId, user, bot);
                 break;
             case "🎫 Ввести реф. код":
                 if (user.getUsedReferralCode() != null) {
@@ -2735,15 +3788,6 @@ public class MessageProcessor {
                     lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, "❌ Доступ запрещен", createMainMenuInlineKeyboard(user)));
                 }
                 break;
-            case "⚙️ Прочее":
-                user.setState(UserState.OTHER_MENU);
-                userService.update(user);
-                showOtherMenu(chatId, user, bot);
-                break;
-            case "💎 Главное меню":
-                deletePreviousBotMessage(chatId, bot);
-                showMainMenu(chatId, user, bot);
-                break;
             default:
                 // Если команда не распознана, проверяем inline callback данные
                 if (text.startsWith("inline_")) {
@@ -2754,44 +3798,68 @@ public class MessageProcessor {
                 }
         }
     }
-
-
     private void showCommissionInfo(Long chatId, User user, MyBot bot) {
         String message = String.format("""
-                        💰 Актуальные комиссии:
-                        
-                        • 1000-1999 ₽: %.1f%%
-                        • 2000-2999 ₽: %.1f%%
-                        • 3000-4999 ₽: %.1f%%
-                        • 5000-9999 ₽: %.1f%%
-                        • 10000-14999 ₽: %.1f%%
-                        • 15000-19999 ₽: %.1f%%
-                        • 20000-24999 ₽: %.1f%%
-                        • 25000-29999 ₽: %.1f%%
-                        • 30000+ ₽: %.1f%%
-                        
-                        💡 Комиссия рассчитывается автоматически при создании заявки.
-                        💸 VIP-приоритет: +300 ₽ к сумме заявки
-                        
-                        👑 VIP-приоритет обеспечивает:
-                        • Первоочередную обработку
-                        • Ускоренное выполнение
-                        • Приоритет в очереди
-                        """,
-                commissionConfig.getCommissionPercent(BigDecimal.valueOf(1000)),
-                commissionConfig.getCommissionPercent(BigDecimal.valueOf(2000)),
-                commissionConfig.getCommissionPercent(BigDecimal.valueOf(3000)),
-                commissionConfig.getCommissionPercent(BigDecimal.valueOf(5000)),
-                commissionConfig.getCommissionPercent(BigDecimal.valueOf(10000)),
-                commissionConfig.getCommissionPercent(BigDecimal.valueOf(15000)),
-                commissionConfig.getCommissionPercent(BigDecimal.valueOf(20000)),
-                commissionConfig.getCommissionPercent(BigDecimal.valueOf(25000)),
-                commissionConfig.getCommissionPercent(BigDecimal.valueOf(30000))
+            💰 Актуальные комиссии:
+            
+            • 1000-1999 ₽: %.1f%%
+            • 2000-2999 ₽: %.1f%%
+            • 3000-4999 ₽: %.1f%%
+            • 5000-9999 ₽: %.1f%%
+            • 10000-14999 ₽: %.1f%%
+            • 15000-19999 ₽: %.1f%%
+            • 20000-24999 ₽: %.1f%%
+            
+            💡 Комиссия рассчитывается автоматически при создании заявки.
+            💸 VIP-приоритет: +300 ₽ к сумме заявки
+            
+            👑 VIP-приоритет обеспечивает:
+            • Первоочередную обработку
+            • Ускоренное выполнение
+            • Приоритет в очереди
+            • Личного оператора
+            """,
+                commissionConfig.getCommissionPercent(new BigDecimal("1000")),
+                commissionConfig.getCommissionPercent(new BigDecimal("2000")),
+                commissionConfig.getCommissionPercent(new BigDecimal("3000")),
+                commissionConfig.getCommissionPercent(new BigDecimal("5000")),
+                commissionConfig.getCommissionPercent(new BigDecimal("10000")),
+                commissionConfig.getCommissionPercent(new BigDecimal("15000")),
+                commissionConfig.getCommissionPercent(new BigDecimal("20000"))
         );
 
         InlineKeyboardMarkup inlineKeyboard = createCommissionInfoInlineKeyboard();
         int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
         lastMessageId.put(chatId, messageId);
+
+        System.out.println("COMMISSION DEBUG: Commission info displayed to user");
+    }
+    // Вспомогательный метод для получения сообщения о кошельке
+    private String getWalletMessage(CryptoCurrency crypto, boolean isBuy) {
+        if (isBuy) {
+            switch (crypto) {
+                case BTC:
+                    return "🔐 Введите адрес Bitcoin-кошелька, на который поступит крипта:\n\n" +
+                            "• Формат: bc1... или 1... или 3...\n" +
+                            "• Обязательно проверьте адрес перед отправкой!";
+                case LTC:
+                    return "🔐 Введите адрес Litecoin-кошелька, на который поступит крипта:\n\n" +
+                            "• Формат: L... или M... или ltc1...\n" +
+                            "• Обязательно проверьте адрес перед отправкой!";
+                case XMR:
+                    return "🔐 Введите адрес Monero-кошелька, на который поступит крипта:\n\n" +
+                            "• Формат: 4... или 8...\n" +
+                            "• Обязательно проверьте адрес перед отправкой!";
+                default:
+                    return "🔐 Введите адрес кошелька для получения криптовалюты:";
+            }
+        } else {
+            return "🔐 Введите реквизиты для получения рублей:\n\n" +
+                    "• Номер банковской карты\n" +
+                    "• Или номер телефона (если поддерживается)\n" +
+                    "• Или другие реквизиты для перевода\n\n" +
+                    "Пример: 2200 1234 5678 9010";
+        }
     }
 
     private InlineKeyboardMarkup createCommissionInfoInlineKeyboard() {
@@ -2826,34 +3894,16 @@ public class MessageProcessor {
 
     private void showBuyMenu(Long chatId, MyBot bot) {
         String message = """
-        💰 Покупка Bitcoin
-        
-        Вы хотите купить Bitcoin за рубли.
-        
-        После ввода суммы вы увидите:
-        • Сколько рублей вы отдадите
-        • Сколько Bitcoin получите
-        • Комиссию за операцию
-        
-        Выберите способ ввода суммы:
-        """;
+    💰 Покупка криптовалюты
+    
+    Выберите криптовалюту для покупки:
+    """;
 
         InlineKeyboardMarkup keyboard = createBuyMenuInlineKeyboard();
         int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, keyboard);
         lastMessageId.put(chatId, messageId);
     }
 
-    private void showSellMenu(Long chatId, MyBot bot) {
-        String message = "💸 Продажа Bitcoin\n\n" +
-                "Вы хотите продать Bitcoin за рубли.\n\n" +
-                "После ввода суммы вы увидите:\n" +
-                "• Сколько Bitcoin вы отдадите\n" +
-                "• Сколько рублей получите";
-
-        InlineKeyboardMarkup inlineKeyboard = createSellMenuInlineKeyboard();
-        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
-        lastMessageId.put(chatId, messageId);
-    }
 
     private void processBuyMenu(Long chatId, User user, String text, MyBot bot) {
         if ("Ввести сумму в RUB".equals(text)) {
@@ -2861,92 +3911,20 @@ public class MessageProcessor {
             userService.update(user);
             currentOperation.put(user.getId(), "BUY_RUB");
 
-            String message = "💎 Введите сумму в рублях, которую хотите потратить на покупку Bitcoin:";
-            InlineKeyboardMarkup inlineKeyboard = createEnterAmountInlineKeyboard();
-            int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
-            lastMessageId.put(chatId, messageId);
-        } else if ("Ввести количество в BTC".equals(text)) {
-            user.setState(UserState.ENTERING_BUY_AMOUNT_BTC);
-            userService.update(user);
-            currentOperation.put(user.getId(), "BUY_BTC");
-
-            String message = "💎 Введите количество Bitcoin, которое хотите купить:";
-            InlineKeyboardMarkup inlineKeyboard = createEnterAmountInlineKeyboard();
+            // Определяем криптовалюту по текущему контексту или запрашиваем выбор
+            String message = "💎 Сначала выберите криптовалюту для покупки, затем введите сумму в рублях:";
+            InlineKeyboardMarkup inlineKeyboard = createBuyMenuInlineKeyboard();
             int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
             lastMessageId.put(chatId, messageId);
         } else if ("🔙 Главное меню".equals(text)) {
             processMainMenu(chatId, user, bot);
         } else {
-            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, "❌ Пожалуйста, используйте кнопки", createBuyMenuInlineKeyboard()));
+            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
+                    "❌ Пожалуйста, используйте кнопки", createBuyMenuInlineKeyboard()));
         }
     }
 
-    private void processSellMenu(Long chatId, User user, String text, MyBot bot) {
-        if ("Ввести сумму".equals(text)) {
-            user.setState(UserState.ENTERING_SELL_AMOUNT);
-            userService.update(user);
-            currentOperation.put(user.getId(), "SELL");
 
-            String message = "💎 Введите количество Bitcoin, которое хотите продать:";
-            InlineKeyboardMarkup keyboard = createEnterAmountInlineKeyboard();
-            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, keyboard));
-        } else if ("🔙 Главное меню".equals(text)) {
-            processMainMenu(chatId, user, bot);
-        } else {
-            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, "❌ Пожалуйста, используйте кнопки", createSellMenuInlineKeyboard()));
-        }
-    }
-
-    private void processEnteringSellAmount(Long chatId, User user, String text, MyBot bot) {
-        switch (text) {
-            case "🔙 Назад":
-                user.setState(UserState.SELL_MENU);
-                userService.update(user);
-                showSellMenu(chatId, bot);
-                break;
-            case "🔙 Главное меню":
-                processMainMenu(chatId, user, bot);
-                break;
-            default:
-                try {
-                    BigDecimal btcAmount = toBigDecimal(text);
-                    if (btcAmount.compareTo(BigDecimal.ZERO) <= 0) {
-                        lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                                "❌ Количество должно быть больше 0", createEnterAmountInlineKeyboard()));
-                        return;
-                    }
-
-                    BigDecimal btcPrice = (cryptoPriceService.getCurrentPrice("BTC", "RUB"));
-                    BigDecimal rubAmount = btcAmount.multiply(btcPrice);
-                    BigDecimal commission = commissionService.calculateCommission(rubAmount);
-                    BigDecimal totalReceived = rubAmount.subtract(commission);
-
-                    Application application = new Application();
-                    application.setUser(user);
-                    application.setUserValueGetType(ValueType.RUB);
-                    application.setUserValueGiveType(ValueType.BTC);
-                    application.setUserValueGiveValue(btcAmount);
-                    application.setUserValueGetValue(totalReceived);
-                    application.setCalculatedGiveValue(btcAmount);
-                    application.setCalculatedGetValue(totalReceived);
-                    application.setTitle("Продажа BTC за RUB");
-                    application.setStatus(ApplicationStatus.FREE);
-
-                    temporaryApplications.put(user.getId(), application);
-
-                    String message = "🔐 Введите номер карты или счет для получения рублей:";
-                    InlineKeyboardMarkup keyboard = createBackInlineKeyboard();
-                    lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, keyboard));
-
-                    user.setState(UserState.ENTERING_WALLET);
-                    userService.update(user);
-
-                } catch (NumberFormatException e) {
-                    lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                            "❌ Пожалуйста, введите корректное число", createEnterAmountInlineKeyboard()));
-                }
-        }
-    }
 
     private void showExchangeRates(Long chatId, User user, MyBot bot) {
         BigDecimal btcPrice = cryptoPriceService.getCurrentPrice("BTC", "RUB");
@@ -2958,7 +3936,7 @@ public class MessageProcessor {
                 ₿ Bitcoin (BTC): %s
                 Ξ Ethereum (ETH): %s
                 
-                *Курсы обновляются автоматически
+                Курсы обновляются автоматически
                 """, formatRubAmount(btcPrice), formatRubAmount(ethPrice));
 
         InlineKeyboardMarkup inlineKeyboard = createBackAndMainMenuKeyboard();
@@ -3013,6 +3991,14 @@ public class MessageProcessor {
     }
 
     private void showProfile(Long chatId, User user, MyBot bot) {
+        // Информация о реферальном коде
+        String referralCodeInfo;
+        if (user.hasUsedReferralCode()) {
+            referralCodeInfo = String.format("✅ Введен реферальный код: %s", user.getUsedReferralCode());
+        } else {
+            referralCodeInfo = "❌ Реферальный код не введен";
+        }
+        
         String message = String.format("""
                         👤 Ваш профиль:
                         
@@ -3030,6 +4016,7 @@ public class MessageProcessor {
                         📈 Всего заявок: %d
                         
                         📈 Реферальная система:
+                        %s
                         👥 Приглашено: %d
                         💰 Заработано: %s
                         """,
@@ -3042,6 +4029,7 @@ public class MessageProcessor {
                 formatRubAmount(user.getTotalBuyAmount()),
                 formatRubAmount(user.getTotalSellAmount()),
                 user.getTotalApplications(),
+                referralCodeInfo,
                 user.getReferralCount(),
                 formatRubAmount(user.getReferralEarnings())
         );
@@ -3051,8 +4039,6 @@ public class MessageProcessor {
         int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
         lastMessageId.put(chatId, messageId);
     }
-
-
     private void processApplyingCoupon(Long chatId, User user, String text, MyBot bot) {
         Application application = temporaryApplications.get(user.getId());
 
@@ -3074,7 +4060,9 @@ public class MessageProcessor {
                         "BUY_BTC".equals(currentOperation.get(user.getId()))) {
                     user.setState(UserState.BUY_MENU);
                 } else {
-                    user.setState(UserState.SELL_MENU);
+                    // Sell functionality disabled
+                    processMainMenu(chatId, user, bot);
+                    return;
                 }
                 userService.update(user);
                 lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
@@ -3162,7 +4150,7 @@ public class MessageProcessor {
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
 
-        // --- РЯД 1 (Старые кнопки) ---
+        // --- РЯД 1 ---
         List<InlineKeyboardButton> row1 = new ArrayList<>();
         InlineKeyboardButton applicationsButton = new InlineKeyboardButton();
         applicationsButton.setText("📋 Мои заявки");
@@ -3174,43 +4162,48 @@ public class MessageProcessor {
         couponsButton.setCallbackData("inline_my_coupons");
         row1.add(couponsButton);
 
-        // --- РЯД 2 (Старые кнопки) ---
+        // --- РЯД 2 ---
         List<InlineKeyboardButton> row2 = new ArrayList<>();
-        InlineKeyboardButton calculatorButton = new InlineKeyboardButton();
-        calculatorButton.setText("🧮 Калькулятор");
-        calculatorButton.setCallbackData("inline_calculator");
-        row2.add(calculatorButton);
-
-        InlineKeyboardButton ratesButton = new InlineKeyboardButton();
-        ratesButton.setText("📊 Курсы");
-        ratesButton.setCallbackData("inline_rates");
-        row2.add(ratesButton);
-
-        // --- РЯД 3 (Старые кнопки) ---
-        List<InlineKeyboardButton> row3 = new ArrayList<>();
         InlineKeyboardButton profileButton = new InlineKeyboardButton();
         profileButton.setText("👤 Профиль");
         profileButton.setCallbackData("inline_profile");
-        row3.add(profileButton);
+        row2.add(profileButton);
 
         InlineKeyboardButton referralButton = new InlineKeyboardButton();
         referralButton.setText("📈 Реферальная система");
         referralButton.setCallbackData("inline_referral_system");
-        row3.add(referralButton);
+        row2.add(referralButton);
 
-        // --- РЯД 4 (НОВАЯ КНОПКА) ---
-        List<InlineKeyboardButton> row4 = new ArrayList<>();
+        // --- РЯД 3 (Спам-блок) ---
+        List<InlineKeyboardButton> row3 = new ArrayList<>();
         InlineKeyboardButton spamButton = new InlineKeyboardButton();
         spamButton.setText("🆘 У меня СПАМ-БЛОК (Нужна помощь)");
         spamButton.setCallbackData("inline_spam_block_help");
-        row4.add(spamButton);
+        row3.add(spamButton);
 
-        // --- РЯД 5 (НОВАЯ КНОПКА для обратной связи) ---
+        // --- РЯД 4 (Отзывы) ---
+        List<InlineKeyboardButton> row4 = new ArrayList<>();
+        InlineKeyboardButton reviewsButton = new InlineKeyboardButton();
+        reviewsButton.setText("💬 Отзывы");
+        reviewsButton.setUrl("https://t.me/CNchange24");
+        row4.add(reviewsButton);
+
+        InlineKeyboardButton incomeReviewsButton = new InlineKeyboardButton();
+        incomeReviewsButton.setText("❤️ Доход на отзывах");
+        incomeReviewsButton.setUrl("https://telegra.ph/Zarabotajte-s-nami-250-350-rublej-za-chestnyj-otzyv-11-26");
+        row4.add(incomeReviewsButton);
+
+        // --- РЯД 5 (Контакты и Правила) ---
         List<InlineKeyboardButton> row5 = new ArrayList<>();
-        InlineKeyboardButton feedbackBotButton = new InlineKeyboardButton();
-        feedbackBotButton.setText("💬 ОСтавить отзыв");
-        feedbackBotButton.setUrl("https://t.me/CN_FEEDBACKBOT");
-        row5.add(feedbackBotButton);
+        InlineKeyboardButton contactsButton = new InlineKeyboardButton();
+        contactsButton.setText("📞 Контакты");
+        contactsButton.setCallbackData("inline_contacts");
+        row5.add(contactsButton);
+
+        InlineKeyboardButton rulesButton = new InlineKeyboardButton();
+        rulesButton.setText("📜 Правила");
+        rulesButton.setUrl("https://telegra.ph/Pravila-obshcheniya-v-soobshchestve-obmennika-11-16");
+        row5.add(rulesButton);
 
         // --- РЯД 6 (Навигация) ---
         List<InlineKeyboardButton> row6 = new ArrayList<>();
@@ -3228,9 +4221,9 @@ public class MessageProcessor {
         rows.add(row1);
         rows.add(row2);
         rows.add(row3);
-        rows.add(row4); // Спам-блок
-        rows.add(row5); // Новая кнопка для перехода к боту поддержки
-        rows.add(row6); // Навигация
+        rows.add(row4);
+        rows.add(row5);
+        rows.add(row6);
 
         markup.setKeyboard(rows);
         return markup;
@@ -3290,7 +4283,7 @@ public class MessageProcessor {
                 .collect(Collectors.toList());
 
         if (recentApplications.isEmpty()) {
-            String message = "📭 У вас пока нет заявок.\nСоздайте первую с помощью кнопки '💰 Купить' или '💸 Продать'";
+            String message = "📭 У вас пока нет заявок.\nСоздайте первую с помощью кнопки '💰 Купить'";
             InlineKeyboardMarkup inlineKeyboard = createBackAndMainMenuKeyboard();
             int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
             lastMessageId.put(chatId, messageId);
@@ -3354,16 +4347,21 @@ public class MessageProcessor {
                     BigDecimal btcPrice =(cryptoPriceService.getCurrentPrice("BTC", "RUB"));
                     BigDecimal btcAmount = rubAmount.divide(btcPrice, 8, RoundingMode.HALF_UP);
                     BigDecimal commission = commissionService.calculateCommission(rubAmount);
+                    BigDecimal commissionPercent = commissionService.getCommissionPercent(rubAmount);
                     BigDecimal totalAmount = commissionService.calculateTotalWithCommission(rubAmount);
 
                     Application application = new Application();
                     application.setUser(user);
                     application.setUserValueGetType(ValueType.BTC);
                     application.setUserValueGiveType(ValueType.RUB);
-                    application.setUserValueGiveValue(rubAmount);
+                    application.setOriginalGiveValue(rubAmount); // Сохраняем сумму БЕЗ комиссии
+                    application.setOriginalGetValue(btcAmount);
+                    application.setUserValueGiveValue(totalAmount);
                     application.setUserValueGetValue(btcAmount);
                     application.setCalculatedGetValue(btcAmount);
                     application.setCalculatedGiveValue(totalAmount);
+                    application.setCommissionAmount(commission);
+                    application.setCommissionPercent(commissionPercent);
                     application.setTitle("Покупка BTC за RUB");
                     application.setStatus(ApplicationStatus.FREE);
 
@@ -3371,14 +4369,18 @@ public class MessageProcessor {
 
                     String message = "🔐 Теперь введите адрес Bitcoin-кошелька, на который поступит крипта:";
                     InlineKeyboardMarkup keyboard = createBackInlineKeyboard();
-                    lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, keyboard));
+                    int messageId = bot.sendMessageWithKeyboard(chatId, message, keyboard);
+        lastMessageId.put(chatId, messageId);
+        addMessageToHistory(chatId, messageId);
 
                     user.setState(UserState.ENTERING_WALLET);
                     userService.update(user);
 
                 } catch (NumberFormatException e) {
-                    lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                            "❌ Пожалуйста, введите корректное число", createEnterAmountInlineKeyboard()));
+                    int messageId = bot.sendMessageWithKeyboard(chatId,
+                            "❌ Пожалуйста, введите корректное число", createEnterAmountInlineKeyboard());
+                    lastMessageId.put(chatId, messageId);
+                    addMessageToHistory(chatId, messageId);
                 } catch (Exception e) {
                     lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
                             "❌ Ошибка при расчете: " + e.getMessage(), createEnterAmountInlineKeyboard()));
@@ -3386,56 +4388,7 @@ public class MessageProcessor {
         }
     }
 
-    private void processEnteringBuyAmountBtc(Long chatId, User user, String text, MyBot bot) {
-        switch (text) {
-            case "🔙 Назад":
-                user.setState(UserState.BUY_MENU);
-                userService.update(user);
-                showBuyMenu(chatId, bot);
-                break;
-            case "🔙 Главное меню":
-                processMainMenu(chatId, user, bot);
-                break;
-            default:
-                try {
-                    BigDecimal btcAmount = toBigDecimal(text);
-                    if (btcAmount.compareTo(BigDecimal.ZERO) <= 0) {
-                        lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                                "❌ Количество должно быть больше 0", createEnterAmountInlineKeyboard()));
-                        return;
-                    }
 
-                    BigDecimal btcPrice = (cryptoPriceService.getCurrentPrice("BTC", "RUB"));
-                    BigDecimal rubAmount = btcAmount.multiply(btcPrice);
-                    BigDecimal commission = commissionService.calculateCommission(rubAmount);
-                    BigDecimal totalAmount = commissionService.calculateTotalWithCommission(rubAmount);
-
-                    Application application = new Application();
-                    application.setUser(user);
-                    application.setUserValueGetType(ValueType.BTC);
-                    application.setUserValueGiveType(ValueType.RUB);
-                    application.setUserValueGiveValue(totalAmount);
-                    application.setUserValueGetValue(btcAmount);
-                    application.setCalculatedGetValue(btcAmount);
-                    application.setCalculatedGiveValue(totalAmount);
-                    application.setTitle("Покупка BTC за RUB");
-                    application.setStatus(ApplicationStatus.FREE);
-
-                    temporaryApplications.put(user.getId(), application);
-
-                    String message = "🔐 Теперь введите адрес Bitcoin-кошелька, на который поступит крипта:";
-                    InlineKeyboardMarkup keyboard = createBackInlineKeyboard();
-                    lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, keyboard));
-
-                    user.setState(UserState.ENTERING_WALLET);
-                    userService.update(user);
-
-                } catch (NumberFormatException e) {
-                    lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                            "❌ Пожалуйста, введите корректное число", createEnterAmountInlineKeyboard()));
-                }
-        }
-    }
 
 
     private void processMainMenu(Long chatId, User user, MyBot bot) {
@@ -3445,23 +4398,40 @@ public class MessageProcessor {
     }
 
     private void showAllApplications(Long chatId, User user, MyBot bot) {
-        List<Application> allApplications = applicationService.findAll();
+        int page = adminAllApplicationsPage.getOrDefault(user.getId(), 0);
+        int pageSize = 10;
 
-        if (allApplications.isEmpty()) {
-            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                    "📭 Нет заявок в системе", createAdminApplicationsInlineKeyboard()));
-            return;
+        List<Application> allApplications = applicationService.findAll();
+        int totalApplications = allApplications.size();
+        int totalPages = (int) Math.ceil((double) totalApplications / pageSize);
+
+        // Корректируем страницу, если она вышла за пределы
+        if (page >= totalPages && totalPages > 0) {
+            page = totalPages - 1;
+            adminAllApplicationsPage.put(user.getId(), page);
         }
 
-        StringBuilder message = new StringBuilder("📋 Все заявки:\n\n");
+        // Получаем заявки для текущей страницы
+        List<Application> pageApplications = allApplications.stream()
+                .sorted((a1, a2) -> a2.getCreatedAt().compareTo(a1.getCreatedAt())) // новые сначала
+                .skip(page * pageSize)
+                .limit(pageSize)
+                .collect(Collectors.toList());
 
-        for (int i = 0; i < Math.min(allApplications.size(), 10); i++) {
-            Application app = allApplications.get(i);
-            String userInfo = String.format("@%s (ID: %d)",
-                    app.getUser().getUsername() != null ? app.getUser().getUsername() : "нет_username",
-                    app.getUser().getId());
+        StringBuilder message = new StringBuilder();
 
-            message.append(String.format("""
+        if (pageApplications.isEmpty()) {
+            message.append("📭 Нет заявок в системе");
+        } else {
+            message.append(String.format("📋 Все заявки (стр. %d/%d):\n\n", page + 1, totalPages));
+
+            for (int i = 0; i < pageApplications.size(); i++) {
+                Application app = pageApplications.get(i);
+                String userInfo = String.format("@%s (ID: %d)",
+                        app.getUser().getUsername() != null ? app.getUser().getUsername() : "нет_username",
+                        app.getUser().getId());
+
+                message.append(String.format("""
                             🆔 #%d | %s
                             👤 %s
                             %s
@@ -3470,53 +4440,63 @@ public class MessageProcessor {
                             🕒 %s
                             --------------------
                             """,
-                    app.getId(),
-                    app.getTitle(),
-                    app.getUser().getFirstName(),
-                    userInfo, // ДОБАВЛЕНО
-                    app.getCalculatedGiveValue(),
-                    app.getIsVip() ? "👑 VIP" : "🔹 Обычная",
-                    app.getStatus().getDisplayName(),
-                    app.getCreatedAt().format(DateTimeFormatter.ofPattern("dd.MM.yy HH:mm"))
-            ));
+                        app.getId(),
+                        app.getTitle(),
+                        app.getUser().getFirstName(),
+                        userInfo,
+                        app.getCalculatedGiveValue(),
+                        app.getIsVip() ? "👑 VIP" : "🔹 Обычная",
+                        app.getStatus().getDisplayName(),
+                        app.getCreatedAt().format(DateTimeFormatter.ofPattern("dd.MM.yy HH:mm"))
+                ));
+            }
         }
 
-        if (allApplications.size() > 10) {
-            message.append("\n⚠️ Показано 10 из " + allApplications.size() + " заявок");
-        }
-
-        message.append("\n🔍 Для фильтрации введите команду:\n");
-        message.append("• /filter_status [статус] - по статусу\n");
-        message.append("• /filter_user [username] - по пользователю\n");
-        message.append("• /filter_amount [сумма] - по сумме\n");
-
-        lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message.toString(), createAdminApplicationsInlineKeyboard()));
+        // Создаем клавиатуру с пагинацией
+        InlineKeyboardMarkup inlineKeyboard = createAdminApplicationsPaginatedKeyboard(page, totalPages, "all");
+        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message.toString(), inlineKeyboard);
+        lastMessageId.put(chatId, messageId);
     }
 
-
     private void showActiveApplications(Long chatId, User user, MyBot bot) {
-        List<Application> activeApplications = applicationService.findActiveApplications();
+        int page = adminActiveApplicationsPage.getOrDefault(user.getId(), 0);
+        int pageSize = 10;
 
+        List<Application> activeApplications = applicationService.findActiveApplications();
+        int totalApplications = activeApplications.size();
+        int totalPages = (int) Math.ceil((double) totalApplications / pageSize);
+
+        // Корректируем страницу
+        if (page >= totalPages && totalPages > 0) {
+            page = totalPages - 1;
+            adminActiveApplicationsPage.put(user.getId(), page);
+        }
+
+        // Получаем заявки для текущей страницы
         List<Application> sortedApplications = activeApplications.stream()
                 .sorted(Comparator.comparing(Application::getIsVip).reversed()
                         .thenComparing(Application::getCreatedAt))
                 .collect(Collectors.toList());
 
-        if (sortedApplications.isEmpty()) {
-            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                    "📭 Нет активных заявок", createAdminApplicationsInlineKeyboard()));
-            return;
-        }
+        List<Application> pageApplications = sortedApplications.stream()
+                .skip(page * pageSize)
+                .limit(pageSize)
+                .collect(Collectors.toList());
 
-        StringBuilder message = new StringBuilder("📊 Активные заявки (отсортированы по приоритету):\n\n");
+        StringBuilder message = new StringBuilder();
 
-        for (int i = 0; i < sortedApplications.size(); i++) {
-            Application app = sortedApplications.get(i);
-            String userInfo = String.format("@%s (ID: %d)",
-                    app.getUser().getUsername() != null ? app.getUser().getUsername() : "нет_username",
-                    app.getUser().getId());
+        if (pageApplications.isEmpty()) {
+            message.append("📭 Нет активных заявок");
+        } else {
+            message.append(String.format("📊 Активные заявки (стр. %d/%d):\n\n", page + 1, totalPages));
 
-            message.append(String.format("""
+            for (int i = 0; i < pageApplications.size(); i++) {
+                Application app = pageApplications.get(i);
+                String userInfo = String.format("@%s (ID: %d)",
+                        app.getUser().getUsername() != null ? app.getUser().getUsername() : "нет_username",
+                        app.getUser().getId());
+
+                message.append(String.format("""
                             %d. %s #%d
                             👤 %s
                             %s
@@ -3524,21 +4504,23 @@ public class MessageProcessor {
                             🕒 %s
                             --------------------
                             """,
-                    i + 1,
-                    app.getIsVip() ? "👑" : "🔹",
-                    app.getId(),
-                    app.getUser().getFirstName(),
-                    userInfo, // ДОБАВЛЕНО
-                    app.getCalculatedGiveValue(),
-                    app.getCreatedAt().format(DateTimeFormatter.ofPattern("dd.MM.yy HH:mm"))
-            ));
+                        (page * pageSize) + i + 1,
+                        app.getIsVip() ? "👑" : "🔹",
+                        app.getId(),
+                        app.getUser().getFirstName(),
+                        userInfo,
+                        app.getCalculatedGiveValue(),
+                        app.getCreatedAt().format(DateTimeFormatter.ofPattern("dd.MM.yy HH:mm"))
+                ));
+            }
+
+            message.append("\nВведите номер заявки из списка для управления:");
         }
 
-        message.append("\nВведите номер заявки из списка для управления:");
-
-        lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message.toString(), createBackToAdminKeyboard()));
+        InlineKeyboardMarkup inlineKeyboard = createAdminApplicationsPaginatedKeyboard(page, totalPages, "active");
+        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message.toString(), inlineKeyboard);
+        lastMessageId.put(chatId, messageId);
     }
-
     // Обработка выбора заявки по номеру в очереди
     private void processAdminActiveApplicationsSelection(Long chatId, User user, String text, MyBot bot) {
         try {
@@ -3567,35 +4549,146 @@ public class MessageProcessor {
                     "❌ Введите корректный номер", createBackToAdminKeyboard()));
         }
     }
+    private InlineKeyboardMarkup createAdminApplicationsPaginatedKeyboard(int currentPage, int totalPages, String type) {
+        InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+
+        // Ряд с пагинацией (только если больше 1 страницы)
+        if (totalPages > 1) {
+            List<InlineKeyboardButton> paginationRow = new ArrayList<>();
+
+            // Кнопка "Назад"
+            if (currentPage > 0) {
+                InlineKeyboardButton prevButton = new InlineKeyboardButton();
+                prevButton.setText("◀️ Назад");
+                prevButton.setCallbackData("inline_admin_page_" + type + "_" + (currentPage - 1));
+                paginationRow.add(prevButton);
+            }
+
+            // Информация о странице
+            InlineKeyboardButton pageInfoButton = new InlineKeyboardButton();
+            pageInfoButton.setText("Стр. " + (currentPage + 1) + "/" + totalPages);
+            pageInfoButton.setCallbackData("inline_admin_page_info");
+            paginationRow.add(pageInfoButton);
+
+            // Кнопка "Вперед"
+            if (currentPage < totalPages - 1) {
+                InlineKeyboardButton nextButton = new InlineKeyboardButton();
+                nextButton.setText("Вперед ▶️");
+                nextButton.setCallbackData("inline_admin_page_" + type + "_" + (currentPage + 1));
+                paginationRow.add(nextButton);
+            }
+
+            rows.add(paginationRow);
+        }
+
+        // Ряд с основными действиями
+        List<InlineKeyboardButton> actionsRow = new ArrayList<>();
+
+        InlineKeyboardButton refreshButton = new InlineKeyboardButton();
+        refreshButton.setText("🔄 Обновить");
+        refreshButton.setCallbackData("inline_admin_" + type);
+        actionsRow.add(refreshButton);
+
+        InlineKeyboardButton takeButton = new InlineKeyboardButton();
+        takeButton.setText("🎯 Взять заявку");
+        takeButton.setCallbackData("inline_admin_take");
+        actionsRow.add(takeButton);
+
+        // Кнопка "Следующая заявка" (опционально)
+        InlineKeyboardButton nextAppButton = new InlineKeyboardButton();
+        nextAppButton.setText("⏭️ Следующая");
+        nextAppButton.setCallbackData("inline_admin_next");
+        actionsRow.add(nextAppButton);
+
+        rows.add(actionsRow);
+
+        // Ряд с навигацией
+        List<InlineKeyboardButton> navigationRow = new ArrayList<>();
+
+        InlineKeyboardButton backButton = new InlineKeyboardButton();
+        backButton.setText("🔙 Назад");
+        backButton.setCallbackData("inline_admin_back");
+        navigationRow.add(backButton);
+
+        InlineKeyboardButton mainMenuButton = new InlineKeyboardButton();
+        mainMenuButton.setText("💎 Главное меню");
+        mainMenuButton.setCallbackData("inline_main_menu");
+        navigationRow.add(mainMenuButton);
+
+        rows.add(navigationRow);
+
+        markup.setKeyboard(rows);
+        return markup;
+    }
+
+    /**
+     * Проверяет, может ли админ взять заявку
+     */
+    private boolean canAdminTakeApplication(Application application, User admin) {
+        if (application.getStatus() != ApplicationStatus.FREE) {
+            return false;
+        }
+
+        // Если заявка уже в работе другим админом
+        if (application.getStatus() == ApplicationStatus.IN_WORK &&
+                application.getAdminId() != null &&
+                !application.getAdminId().equals(admin.getId())) {
+            return false;
+        }
+
+        return true;
+    }
 
     // Обработка "Следующая заявка"
     private void processNextApplication(Long chatId, User user, MyBot bot) {
-        List<Application> activeApplications = applicationService.findActiveApplications();
+        System.out.println("DEBUG: Processing next application navigation");
 
-        if (activeApplications.isEmpty()) {
-            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                    "📭 Нет активных заявок", createAdminApplicationsInlineKeyboard()));
+        // Определяем текущий тип списка
+        String listType = "";
+        int currentPage = 0;
+        int totalPages = 0;
+
+        if (user.getState() == UserState.ADMIN_VIEW_ALL_APPLICATIONS) {
+            listType = "all";
+            currentPage = adminAllApplicationsPage.getOrDefault(user.getId(), 0);
+            List<Application> allApplications = applicationService.findAll();
+            totalPages = (int) Math.ceil((double) allApplications.size() / 10);
+        } else if (user.getState() == UserState.ADMIN_VIEW_ACTIVE_APPLICATIONS) {
+            listType = "active";
+            currentPage = adminActiveApplicationsPage.getOrDefault(user.getId(), 0);
+            List<Application> activeApplications = applicationService.findActiveApplications();
+            totalPages = (int) Math.ceil((double) activeApplications.size() / 10);
+        } else {
+            // Если состояние не подходит, показываем главное меню админа
+            user.setState(UserState.ADMIN_MAIN_MENU);
+            userService.update(user);
+            showAdminMainMenu(chatId, bot);
             return;
         }
 
-        // Берем первую заявку из отсортированного списка
-        Application nextApplication = activeApplications.stream()
-                .sorted(Comparator.comparing(Application::getIsVip).reversed()
-                        .thenComparing(Application::getCreatedAt))
-                .findFirst()
-                .orElse(null);
+        // Переходим на следующую страницу
+        int nextPage = currentPage + 1;
 
-        if (nextApplication == null) {
-            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                    "❌ Ошибка при поиске заявки", createAdminApplicationsInlineKeyboard()));
+        // Проверяем, не вышли ли за пределы
+        if (nextPage >= totalPages) {
+            bot.sendMessage(chatId, "ℹ️ Вы уже на последней странице");
             return;
         }
 
-        selectedApplication.put(user.getId(), nextApplication.getId());
-        user.setState(UserState.ADMIN_VIEWING_APPLICATION_DETAILS);
-        userService.update(user);
-        showAdminApplicationDetails(chatId, user, nextApplication, bot);
+        // Сохраняем новую страницу
+        if ("all".equals(listType)) {
+            adminAllApplicationsPage.put(user.getId(), nextPage);
+            showAllApplications(chatId, user, bot);
+        } else if ("active".equals(listType)) {
+            adminActiveApplicationsPage.put(user.getId(), nextPage);
+            showActiveApplications(chatId, user, bot);
+        }
+
+        System.out.println("DEBUG: Navigated to page " + nextPage + " of " + listType + " applications");
     }
+
+
 
     // Поиск пользователя
     private void processAdminUserSearch(Long chatId, User user, String text, MyBot bot) {
@@ -3605,6 +4698,8 @@ public class MessageProcessor {
             showAdminMainMenu(chatId, bot);
             return;
         }
+
+
 
         User foundUser = null;
 
@@ -3647,6 +4742,100 @@ public class MessageProcessor {
         showUserDetails(chatId, foundUser, bot);
     }
 
+    private void processTakeApplication(Long chatId, User admin, MyBot bot, String callbackQueryId) {
+        System.out.println("DEBUG: Processing take application request");
+
+        // Получаем активные заявки
+        List<Application> activeApplications = applicationService.findActiveApplications();
+
+        if (activeApplications.isEmpty()) {
+            String message = "📭 Нет активных заявок для взятия в работу";
+            if (callbackQueryId != null) {
+                bot.answerCallbackQuery(callbackQueryId, message);
+            } else {
+                bot.sendMessage(chatId, message);
+            }
+            return;
+        }
+
+        // Сортируем заявки: VIP сначала, затем по дате создания (старые сначала)
+        List<Application> sortedApplications = activeApplications.stream()
+                .sorted(Comparator.comparing(Application::getIsVip).reversed()
+                        .thenComparing(Application::getCreatedAt))
+                .collect(Collectors.toList());
+
+        // Берем первую заявку из отсортированного списка
+        Application nextApplication = sortedApplications.get(0);
+
+        if (nextApplication == null) {
+            String errorMessage = "❌ Ошибка при поиске заявки";
+            if (callbackQueryId != null) {
+                bot.answerCallbackQuery(callbackQueryId, errorMessage);
+            } else {
+                bot.sendMessage(chatId, errorMessage);
+            }
+            return;
+        }
+
+        // Проверяем, не взята ли заявка другим админом
+        if (nextApplication.getStatus() == ApplicationStatus.IN_WORK &&
+                nextApplication.getAdminId() != null &&
+                !nextApplication.getAdminId().equals(admin.getId())) {
+
+            String takenMessage = "❌ Эта заявка уже взята другим оператором";
+            if (callbackQueryId != null) {
+                bot.answerCallbackQuery(callbackQueryId, takenMessage);
+            } else {
+                bot.sendMessage(chatId, takenMessage);
+            }
+            return;
+        }
+
+        try {
+            // Устанавливаем статус "В работе" и привязываем админа
+            nextApplication.setStatus(ApplicationStatus.IN_WORK);
+            nextApplication.setAdminId(admin.getId());
+            applicationService.update(nextApplication);
+
+            // Сохраняем выбранную заявку
+            selectedApplication.put(admin.getId(), nextApplication.getId());
+
+            // Обновляем состояние пользователя
+            admin.setState(UserState.ADMIN_VIEWING_APPLICATION_DETAILS);
+            userService.update(admin);
+
+            String successMessage = "✅ Заявка #" + nextApplication.getId() + " взята в работу";
+            if (callbackQueryId != null) {
+                bot.answerCallbackQuery(callbackQueryId, successMessage);
+            }
+
+            // Показываем меню управления заявкой
+            showAdminApplicationManagementMenu(chatId, admin, nextApplication, bot);
+
+            System.out.println("DEBUG: Application " + nextApplication.getId() + " taken by admin " + admin.getId());
+
+            // Отправляем уведомление пользователю, если заявка перешла в работу
+            try {
+                String userNotification = String.format(
+                        "🔄 Ваша заявка #%d взята в работу оператором.\n\n" +
+                                "📞 Свяжитесь с оператором для уточнения деталей: @SUP_CN",
+                        nextApplication.getId()
+                );
+                bot.sendMessage(nextApplication.getUser().getTelegramId(), userNotification);
+            } catch (Exception e) {
+                System.err.println("Не удалось отправить уведомление пользователю: " + e.getMessage());
+            }
+
+        } catch (Exception e) {
+            System.err.println("Ошибка при взятии заявки: " + e.getMessage());
+            String errorMessage = "❌ Ошибка при взятии заявки: " + e.getMessage();
+            if (callbackQueryId != null) {
+                bot.answerCallbackQuery(callbackQueryId, errorMessage);
+            } else {
+                bot.sendMessage(chatId, errorMessage);
+            }
+        }
+    }
     private void showUserDetails(Long chatId, User targetUser, MyBot bot) {
         String message = String.format("""
                     👤 Информация о пользователе:
@@ -3731,26 +4920,72 @@ public class MessageProcessor {
     }
 
     private void showAdminCommissionSettings(Long chatId, User user, MyBot bot) {
-        String message = "💰 Управление комиссиями\n\n" +
-                "Текущие настройки:\n" +
-                // ИЗМЕНЕНО: Передаем BigDecimal в getCommissionPercent
-                "• 1000-1999 ₽: " + commissionConfig.getCommissionPercent(new BigDecimal("1000")) + "%\n" +
-                "• 2000-2999 ₽: " + commissionConfig.getCommissionPercent(new BigDecimal("2000")) + "%\n" +
-                "• 3000-4999 ₽: " + commissionConfig.getCommissionPercent(new BigDecimal("3000")) + "%\n" +
-                "• 5000-9999 ₽: " + commissionConfig.getCommissionPercent(new BigDecimal("5000")) + "%\n\n" +
-                "• 10000-14999 ₽: " + commissionConfig.getCommissionPercent(new BigDecimal("10000")) + "%\n" +
-                "• 15000-19999 ₽: " + commissionConfig.getCommissionPercent(new BigDecimal("15000")) + "%\n" +
-                "• 20000-24999 ₽: " + commissionConfig.getCommissionPercent(new BigDecimal("20000")) + "%\n" +
-                "• 25000-29999 ₽: " + commissionConfig.getCommissionPercent(new BigDecimal("25000")) + "%\n" +
-                "• 30000 ₽: " + commissionConfig.getCommissionPercent(new BigDecimal("30000")) + "%\n" +
-                "Для изменения введите:\n" +
-                "• Для диапазона: 1000-1999 5\n" +
-                "• Для минимальной суммы: 5000 2\n\n" +
-                "Используйте '🔙 Назад' для возврата";
+        System.out.println("COMMISSION DEBUG: Displaying commission settings to admin");
 
-        InlineKeyboardMarkup inlineKeyboard = createBackToAdminKeyboard();
-        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
+        StringBuilder message = new StringBuilder();
+        message.append("💰 Управление комиссиями\n\n");
+        message.append("📊 Текущие настройки комиссий:\n");
+
+        // Используем новый метод для отображения комиссий
+        String commissionRangesDisplay = commissionConfig.getCommissionRangesDisplay();
+        message.append(commissionRangesDisplay);
+
+        message.append("\n📝 Как обновить комиссию:\n");
+        message.append("Введите в формате: `СУММА ПРОЦЕНТ`\n\n");
+        message.append("Примеры:\n");
+        message.append("• `1000 50.0` - для сумм от 1000 ₽\n");
+        message.append("• `5000 31.0` - для сумм от 5000 ₽\n");
+        message.append("• `1000-1999 50.0` - для диапазона\n\n");
+        message.append("💡 Примечание: Комиссия применяется автоматически при создании заявок");
+
+        // Создаем клавиатуру с кнопкой тестирования
+        InlineKeyboardMarkup inlineKeyboard = createAdminCommissionSettingsKeyboard();
+        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message.toString(), inlineKeyboard);
         lastMessageId.put(chatId, messageId);
+
+        System.out.println("COMMISSION DEBUG: Commission settings displayed successfully");
+    }
+
+    private String getRangeDescription(BigDecimal minAmount, Map<String, BigDecimal> allRanges) {
+        // Находим следующий порог для определения диапазона
+        BigDecimal nextThreshold = allRanges.keySet().stream()
+                .map(BigDecimal::new)
+                .filter(threshold -> threshold.compareTo(minAmount) > 0)
+                .min(BigDecimal::compareTo)
+                .orElse(null);
+
+        if (nextThreshold != null) {
+            // Вычитаем 1 для красивого отображения диапазона
+            BigDecimal maxAmount = nextThreshold.subtract(BigDecimal.ONE);
+            return String.format("%s-%s ₽", minAmount, maxAmount);
+        } else {
+            return minAmount + "+ ₽";
+        }
+    }
+
+    private InlineKeyboardMarkup createAdminCommissionSettingsKeyboard() {
+        InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+
+        // Кнопка тестирования комиссий
+        List<InlineKeyboardButton> row1 = new ArrayList<>();
+        InlineKeyboardButton testButton = new InlineKeyboardButton();
+        testButton.setText("🧪 Тест комиссий");
+        testButton.setCallbackData("inline_test_commissions");
+        row1.add(testButton);
+
+        // Кнопка возврата
+        List<InlineKeyboardButton> row2 = new ArrayList<>();
+        InlineKeyboardButton backButton = new InlineKeyboardButton();
+        backButton.setText("🔙 Назад");
+        backButton.setCallbackData("inline_admin_back");
+        row2.add(backButton);
+
+        rows.add(row1);
+        rows.add(row2);
+
+        markup.setKeyboard(rows);
+        return markup;
     }
 
     private void showCreateCouponMenu(Long chatId, MyBot bot) {
@@ -4003,6 +5238,31 @@ public class MessageProcessor {
         }
     }
 
+    private void processAdminApplicationSearch(Long chatId, User user, String text, MyBot bot) {
+        try {
+            Long applicationId = Long.parseLong(text);
+            Application application = applicationService.find(applicationId);
+
+            if (application == null) {
+                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
+                    "❌ Заявка #" + applicationId + " не найдена\n\n🔍 Введите другой номер заявки:",
+                    createBackToAdminKeyboard()));
+                return;
+            }
+
+            selectedApplication.put(user.getId(), applicationId);
+            user.setState(UserState.ADMIN_VIEWING_APPLICATION_DETAILS);
+            userService.update(user);
+
+            showAdminApplicationDetails(chatId, user, application, bot);
+
+        } catch (NumberFormatException e) {
+            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
+                "❌ Введите корректный номер заявки\n\n🔍 Пример: 123",
+                createBackToAdminKeyboard()));
+        }
+    }
+
     private void showAdminApplicationDetails(Long chatId, User user, Application application, MyBot bot) {
         showAdminApplicationManagementMenu(chatId, user, application, bot);
     }
@@ -4046,7 +5306,6 @@ public class MessageProcessor {
                         "❌ Пожалуйста, используйте кнопки", createOtherMenuInlineKeyboard()));
         }
     }
-
     private void processCalculatorBuy(Long chatId, User user, String text, MyBot bot) {
         if (text.equals("🔙 Назад")) {
             user.setState(UserState.CALCULATOR_MENU);
@@ -4087,7 +5346,6 @@ public class MessageProcessor {
                     "❌ Пожалуйста, введите корректное число", createCalculatorMenuInlineKeyboard()));
         }
     }
-
     // Обновляем метод отмены через текстовую команду
     private void cancelUserApplication(Long chatId, User user, Long applicationId, MyBot bot) {
         Application application = applicationService.find(applicationId);
@@ -4135,12 +5393,6 @@ public class MessageProcessor {
                 lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
                         "💎 Введите сумму в рублях для расчета:", createCalculatorMenuInlineKeyboard()));
                 break;
-            case "💸 Продать BTC":
-                user.setState(UserState.CALCULATOR_SELL);
-                userService.update(user);
-                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
-                        "💎 Введите количество BTC для расчета:", createCalculatorMenuInlineKeyboard()));
-                break;
             case "🔙 Назад":
                 user.setState(UserState.OTHER_MENU);
                 userService.update(user);
@@ -4170,11 +5422,6 @@ public class MessageProcessor {
         buyButton.setCallbackData("inline_calculator_buy");
         row1.add(buyButton);
 
-        InlineKeyboardButton sellButton = new InlineKeyboardButton();
-        sellButton.setText("💸 Продать BTC");
-        sellButton.setCallbackData("inline_calculator_sell");
-        row1.add(sellButton);
-
         List<InlineKeyboardButton> row2 = new ArrayList<>();
         InlineKeyboardButton backButton = new InlineKeyboardButton();
         backButton.setText("🔙 Назад");
@@ -4193,6 +5440,69 @@ public class MessageProcessor {
 
         markup.setKeyboard(rows);
         return markup;
+    }
+
+    private void processAdminPageChange(Long chatId, User user, String callbackData, MyBot bot) {
+        try {
+            String[] parts = callbackData.split("_");
+            String listType = parts[3]; // "all" или "active"
+            int newPage = Integer.parseInt(parts[4]);
+
+            if ("all".equals(listType)) {
+                adminAllApplicationsPage.put(user.getId(), newPage);
+                showAllApplications(chatId, user, bot);
+            } else if ("active".equals(listType)) {
+                adminActiveApplicationsPage.put(user.getId(), newPage);
+                showActiveApplications(chatId, user, bot);
+            }
+
+        } catch (Exception e) {
+            System.out.println("ERROR in processAdminPageChange: " + e.getMessage());
+            bot.sendMessage(chatId, "❌ Ошибка при переключении страницы");
+        }
+    }
+
+    private void processAdminUsersPageChange(Long chatId, User user, String callbackData, MyBot bot) {
+        try {
+            System.out.println("DEBUG: processAdminUsersPageChange called with: " + callbackData);
+
+            if (callbackData.equals("inline_admin_users_page_info")) {
+                // Просто обновляем текущую страницу
+                if (user.getState() == UserState.ADMIN_VIEW_ALL_USERS) {
+                    showAllUsers(chatId, user, bot);
+                }
+                return;
+            }
+
+            if (callbackData.equals("inline_admin_users_back")) {
+                user.setState(UserState.ADMIN_USERS_MENU);
+                userService.update(user);
+                showAdminUsersMenu(chatId, bot);
+                return;
+            }
+
+            String[] parts = callbackData.split("_");
+            System.out.println("DEBUG: Callback parts: " + String.join(", ", parts));
+
+            String action = parts[3]; // "prev" или "next"
+            String type = parts[4] + "_" + parts[5]; // "all_users"
+
+            int currentPage = adminAllUsersPage.getOrDefault(user.getId(), 0);
+            int newPage = currentPage;
+
+            if ("prev".equals(action)) {
+                newPage = Math.max(0, currentPage - 1);
+            } else if ("next".equals(action)) {
+                newPage = currentPage + 1;
+            }
+
+            adminAllUsersPage.put(user.getId(), newPage);
+            showAllUsers(chatId, user, bot);
+
+        } catch (Exception e) {
+            System.out.println("ERROR in processAdminUsersPageChange: " + e.getMessage());
+            bot.sendMessage(chatId, "❌ Ошибка при переключении страницы пользователей");
+        }
     }
 
     private void showVipConfirmation(Long chatId, User user, Application application, MyBot bot) {
@@ -4317,18 +5627,31 @@ public class MessageProcessor {
                         "❌ Пожалуйста, используйте кнопки", createReferralMenuInlineKeyboard()));
         }
     }
-
     private void showReferralMenu(Long chatId, User user, MyBot bot) {
-        user = userService.find(user.getId());
-        ReferralStats stats = referralService.getReferralStats(user);
+        // Обновляем статистику перед показом
+        user = userService.find(user.getId()); // Перезагружаем актуальные данные
+        ReferralStatsEmbedded stats = referralService.getReferralStats(user);
 
-        String referralLink = referralService.generateReferralLink(user);
+        // Получаем актуальную реферальную ссылку
+        String referralLink = referralService.generateReferralLinkWithCode(user);
+        
+        // Получаем реферальный код пользователя
+        List<ReferralCode> userCodes = referralService.getUserActiveReferralCodes(user.getId());
+        String referralCodeDisplay;
+        if (!userCodes.isEmpty()) {
+            ReferralCode code = userCodes.get(0);
+            referralCodeDisplay = String.format("🎫 Ваш реферальный код: %s", code.getCode());
+        } else {
+            referralCodeDisplay = "🎫 Реферальный код: не создан";
+        }
 
         String message = String.format("""
                 🎁 Реферальная программа
 
                 🔗 Ваша реферальная ссылка:
                 📌 %s
+                
+                %s
 
                 ━━━━━━━━━━━━━━━━━━━━━━━
                 📊 Статистика
@@ -4342,6 +5665,7 @@ public class MessageProcessor {
                 1️⃣ Первого уровня: %d шт.
                 2️⃣ Второго уровня: %d шт.
                 🏃‍➡️ Активных рефералов (всего): %d
+                🌐 Всего пользователей с реферальным кодом: %d
 
                 ━━━━━━━━━━━━━━━━━━━━━━━
                 💰 Финансовая статистика
@@ -4367,17 +5691,19 @@ public class MessageProcessor {
                 ☎️ Оператор: @SUP_CN
                 """,
                 referralLink,
+                referralCodeDisplay,
                 referralService.getLevel1Percent(),
                 referralService.getLevel1Percent(),
                 referralService.getLevel2Percent(),
                 stats.getLevel1Count(),
                 stats.getLevel2Count(),
                 stats.getActiveReferrals(),
+                userService.getUsersWithReferralCodeCount(),
                 stats.getTotalExchangeAmount(),
                 stats.getTotalExchangeCount(),
                 stats.getMonthlyExchangeAmount(),
                 stats.getMonthlyExchangeCount(),
-                stats.getTotalEarned(),
+                user.getReferralEarnings(),
                 user.getReferralBalance()
         );
 
@@ -4409,8 +5735,15 @@ public class MessageProcessor {
                 return;
             }
 
-            // Создаем реферальный код
-            ReferralCode referralCode = referralService.createReferralCode(user);
+            // FIX: Create a new ReferralCode object first
+            ReferralCode referralCode = new ReferralCode();
+            // Set the description from user input
+            referralCode.setDescription(text);
+            // Set the user
+            referralCode.setUser(user);
+
+            // Generate the referral code using the service
+            ReferralCode createdCode = referralService.createReferralCode(referralCode);
 
             String message = String.format("""
                         ✅ Реферальный код создан!
@@ -4421,9 +5754,9 @@ public class MessageProcessor {
                         Теперь вы можете делиться этим кодом с друзьями. 
                         За каждую успешную заявку реферала вы будете получать %.2f%% от суммы заявки.
                         """,
-                    referralCode.getCode(),
-                    text, // используем введенный текст как описание
-                    referralCode.getRewardPercent());
+                    createdCode.getCode(),
+                    text,
+                    createdCode.getRewardPercent());
 
             InlineKeyboardMarkup inlineKeyboard = createBackAndMainMenuKeyboard();
             int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
@@ -4529,52 +5862,37 @@ public class MessageProcessor {
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
 
-        // Первый ряд - основные кнопки
+        // Первый ряд: Покупка
         List<InlineKeyboardButton> row1 = new ArrayList<>();
         InlineKeyboardButton buyButton = new InlineKeyboardButton();
-        buyButton.setText("💰 Купить BTC");
-        buyButton.setCallbackData("inline_buy");
+        buyButton.setText("💰 Купить крипту");
+        buyButton.setCallbackData("inline_buy_menu");
         row1.add(buyButton);
 
-        InlineKeyboardButton sellButton = new InlineKeyboardButton();
-        sellButton.setText("💸 Продать BTC");
-        sellButton.setCallbackData("inline_sell");
-        row1.add(sellButton);
-
-        // Второй ряд
+        // Второй ряд: Комиссии и Прочее
         List<InlineKeyboardButton> row2 = new ArrayList<>();
-        InlineKeyboardButton commissionsButton = new InlineKeyboardButton();
-        commissionsButton.setText("💳 Комиссии");
-        commissionsButton.setCallbackData("inline_commissions");
-        row2.add(commissionsButton);
+        InlineKeyboardButton commissionButton = new InlineKeyboardButton();
+        commissionButton.setText("💳 Комиссии");
+        commissionButton.setCallbackData("inline_commissions");
+        row2.add(commissionButton);
 
         InlineKeyboardButton otherButton = new InlineKeyboardButton();
         otherButton.setText("⚙️ Прочее");
         otherButton.setCallbackData("inline_other");
         row2.add(otherButton);
 
-        rows.add(row1);
-        rows.add(row2);
-
-        // Третий ряд - реферальная кнопка (если не использована)
-        if (user.getUsedReferralCode() == null) {
-            List<InlineKeyboardButton> row3 = new ArrayList<>();
-            InlineKeyboardButton referralButton = new InlineKeyboardButton();
-            referralButton.setText("🎫 Ввести реф. код");
-            referralButton.setCallbackData("inline_referral");
-            row3.add(referralButton);
-            rows.add(row3);
-        }
-
-        // Четвертый ряд - админ панель
+        // Третий ряд: Админ панель (только для админов)
         if (adminConfig.isAdmin(user.getId())) {
-            List<InlineKeyboardButton> row4 = new ArrayList<>();
+            List<InlineKeyboardButton> row3 = new ArrayList<>();
             InlineKeyboardButton adminButton = new InlineKeyboardButton();
             adminButton.setText("👨‍💼 Админ панель");
             adminButton.setCallbackData("inline_admin");
-            row4.add(adminButton);
-            rows.add(row4);
+            row3.add(adminButton);
+            rows.add(row3);
         }
+
+        rows.add(row1);
+        rows.add(row2);
 
         markup.setKeyboard(rows);
         return markup;
@@ -4608,18 +5926,111 @@ public class MessageProcessor {
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
 
+        // Bitcoin
         List<InlineKeyboardButton> row1 = new ArrayList<>();
-        InlineKeyboardButton rubButton = new InlineKeyboardButton();
-        rubButton.setText("💎 Ввести сумму в RUB");
-        rubButton.setCallbackData("inline_buy_rub");
-        row1.add(rubButton);
-
-        List<InlineKeyboardButton> row2 = new ArrayList<>();
         InlineKeyboardButton btcButton = new InlineKeyboardButton();
-        btcButton.setText("₿ Ввести количество в BTC");
+        btcButton.setText("₿ Bitcoin (BTC)");
         btcButton.setCallbackData("inline_buy_btc");
-        row2.add(btcButton);
+        row1.add(btcButton);
 
+        // Litecoin
+        List<InlineKeyboardButton> row2 = new ArrayList<>();
+        InlineKeyboardButton ltcButton = new InlineKeyboardButton();
+        ltcButton.setText("Ł Litecoin (LTC)");
+        ltcButton.setCallbackData("inline_buy_ltc");
+        row2.add(ltcButton);
+
+        // Monero
+        List<InlineKeyboardButton> row3 = new ArrayList<>();
+        InlineKeyboardButton xmrButton = new InlineKeyboardButton();
+        xmrButton.setText("ɱ Monero (XMR)");
+        xmrButton.setCallbackData("inline_buy_xmr");
+        row3.add(xmrButton);
+
+        // Навигация
+        List<InlineKeyboardButton> row4 = new ArrayList<>();
+        InlineKeyboardButton backButton = new InlineKeyboardButton();
+        backButton.setText("🔙 Назад");
+        backButton.setCallbackData("inline_back");
+        row4.add(backButton);
+
+        List<InlineKeyboardButton> row5 = new ArrayList<>();
+        InlineKeyboardButton mainMenuButton = new InlineKeyboardButton();
+        mainMenuButton.setText("💎 Главное меню");
+        mainMenuButton.setCallbackData("inline_main_menu");
+        row5.add(mainMenuButton);
+
+        rows.add(row1);
+        rows.add(row2);
+        rows.add(row3);
+        rows.add(row4);
+        rows.add(row5);
+
+        markup.setKeyboard(rows);
+        return markup;
+    }
+
+    private void showInputMethodMenu(Long chatId, User user, CryptoCurrency crypto, MyBot bot) {
+        System.out.println("DEBUG: showInputMethodMenu for " + crypto);
+
+        String cryptoDescription = switch (crypto) {
+            case BTC -> "биткоинов";
+            case LTC -> "лайткоинов";
+            case XMR -> "монеро";
+            default -> crypto.getDisplayName().toLowerCase();
+        };
+
+        String message = String.format("""
+        Покупка %s
+
+        Выберите способ ввода суммы:
+
+        • В рублях - укажите сумму в RUB
+        • %s - укажите количество %s
+        """, crypto.getDisplayName(),
+            switch (crypto) {
+                case BTC -> "В биткоинах";
+                case LTC -> "В лайткоинах";
+                case XMR -> "В монеро";
+                default -> "В " + crypto.getDisplayName().toLowerCase();
+            },
+            cryptoDescription);
+
+        InlineKeyboardMarkup inlineKeyboard = createInputMethodInlineKeyboard(crypto);
+
+        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
+        lastMessageId.put(chatId, messageId);
+
+        // Убедимся, что состояние установлено правильно
+        user.setState(UserState.CHOOSING_INPUT_METHOD);
+        userService.update(user);
+    }
+
+    private InlineKeyboardMarkup createInputMethodInlineKeyboard(CryptoCurrency crypto) {
+        InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+
+        // Кнопка выбора способа ввода - В рублях
+        List<InlineKeyboardButton> row1 = new ArrayList<>();
+        InlineKeyboardButton rubAmountButton = new InlineKeyboardButton();
+        rubAmountButton.setText("В рублях");
+        rubAmountButton.setCallbackData("inline_input_rub_" + crypto.name());
+        row1.add(rubAmountButton);
+
+        // Кнопка выбора способа ввода - В конкретной криптовалюте
+        List<InlineKeyboardButton> row2 = new ArrayList<>();
+        InlineKeyboardButton cryptoAmountButton = new InlineKeyboardButton();
+        String cryptoText = switch (crypto) {
+            case BTC -> "В биткоинах";
+            case LTC -> "В лайткоинах";
+            case XMR -> "В монеро";
+            default -> "В " + crypto.getDisplayName().toLowerCase();
+        };
+        cryptoAmountButton.setText(cryptoText);
+        cryptoAmountButton.setCallbackData("inline_input_crypto_" + crypto.name());
+        row2.add(cryptoAmountButton);
+
+        // Навигация
         List<InlineKeyboardButton> row3 = new ArrayList<>();
         InlineKeyboardButton backButton = new InlineKeyboardButton();
         backButton.setText("🔙 Назад");
@@ -4641,35 +6052,6 @@ public class MessageProcessor {
         return markup;
     }
 
-    private InlineKeyboardMarkup createSellMenuInlineKeyboard() {
-        InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
-        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-
-        List<InlineKeyboardButton> row1 = new ArrayList<>();
-        InlineKeyboardButton sellButton = new InlineKeyboardButton();
-        sellButton.setText("💎 Ввести количество BTC");
-        sellButton.setCallbackData("inline_sell_amount");
-        row1.add(sellButton);
-
-        List<InlineKeyboardButton> row2 = new ArrayList<>();
-        InlineKeyboardButton backButton = new InlineKeyboardButton();
-        backButton.setText("🔙 Назад");
-        backButton.setCallbackData("inline_back");
-        row2.add(backButton);
-
-        List<InlineKeyboardButton> row3 = new ArrayList<>();
-        InlineKeyboardButton mainMenuButton = new InlineKeyboardButton();
-        mainMenuButton.setText("💎 Главное меню");
-        mainMenuButton.setCallbackData("inline_main_menu");
-        row3.add(mainMenuButton);
-
-        rows.add(row1);
-        rows.add(row2);
-        rows.add(row3);
-
-        markup.setKeyboard(rows);
-        return markup;
-    }
 
     private InlineKeyboardMarkup createEnterAmountInlineKeyboard() {
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
@@ -4693,12 +6075,12 @@ public class MessageProcessor {
         markup.setKeyboard(rows);
         return markup;
     }
-
     private InlineKeyboardMarkup createAdminMainMenuInlineKeyboard() {
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
 
-        // Первый ряд - основные кнопки
+        // === ЗАЯВКИ ===
+        // Первый ряд - просмотр заявок
         List<InlineKeyboardButton> row1 = new ArrayList<>();
         InlineKeyboardButton allAppsButton = new InlineKeyboardButton();
         allAppsButton.setText("📋 Все заявки");
@@ -4706,59 +6088,63 @@ public class MessageProcessor {
         row1.add(allAppsButton);
 
         InlineKeyboardButton activeAppsButton = new InlineKeyboardButton();
-        activeAppsButton.setText("📊 Активные заявки");
+        activeAppsButton.setText("⚡ Активные");
         activeAppsButton.setCallbackData("inline_admin_active");
         row1.add(activeAppsButton);
 
-        // Второй ряд
+        // Второй ряд - мои заявки и поиск
         List<InlineKeyboardButton> row2 = new ArrayList<>();
-        InlineKeyboardButton myAppsButton = new InlineKeyboardButton(); // НОВАЯ КНОПКА
+        InlineKeyboardButton myAppsButton = new InlineKeyboardButton();
         myAppsButton.setText("👨‍💼 Мои заявки");
         myAppsButton.setCallbackData("inline_admin_my_applications");
         row2.add(myAppsButton);
 
-        InlineKeyboardButton nextButton = new InlineKeyboardButton();
-        nextButton.setText("⏭️ Следующая заявка");
-        nextButton.setCallbackData("inline_admin_next");
-        row2.add(nextButton);
+        InlineKeyboardButton searchAppButton = new InlineKeyboardButton();
+        searchAppButton.setText("🔍 Поиск заявки");
+        searchAppButton.setCallbackData("inline_admin_search_application");
+        row2.add(searchAppButton);
 
-        // Третий ряд
+        // === ПОЛЬЗОВАТЕЛИ ===
+        // Третий ряд - управление пользователями
         List<InlineKeyboardButton> row3 = new ArrayList<>();
-        InlineKeyboardButton searchButton = new InlineKeyboardButton();
-        searchButton.setText("👥 Поиск пользователя");
-        searchButton.setCallbackData("inline_admin_search");
-        row3.add(searchButton);
+        InlineKeyboardButton usersButton = new InlineKeyboardButton();
+        usersButton.setText("👥 Пользователи");
+        usersButton.setCallbackData("inline_admin_users");
+        row3.add(usersButton);
 
+        // === УПРАВЛЕНИЕ СИСТЕМОЙ ===
+        // Четвертый ряд - купоны и комиссии
+        List<InlineKeyboardButton> row4 = new ArrayList<>();
         InlineKeyboardButton couponButton = new InlineKeyboardButton();
         couponButton.setText("🎫 Купоны");
         couponButton.setCallbackData("inline_admin_coupons");
-        row3.add(couponButton);
+        row4.add(couponButton);
 
-        // Четвертый ряд
-        List<InlineKeyboardButton> row4 = new ArrayList<>();
         InlineKeyboardButton commissionButton = new InlineKeyboardButton();
         commissionButton.setText("💰 Комиссии");
         commissionButton.setCallbackData("inline_admin_commission");
         row4.add(commissionButton);
 
-        InlineKeyboardButton timeFilterButton = new InlineKeyboardButton();
-        timeFilterButton.setText("📅 Фильтр по времени");
-        timeFilterButton.setCallbackData("inline_admin_time");
-        row4.add(timeFilterButton);
-
-        // Пятый ряд
+        // Пятый ряд - бонусные балансы
         List<InlineKeyboardButton> row5 = new ArrayList<>();
         InlineKeyboardButton bonusButton = new InlineKeyboardButton();
         bonusButton.setText("💳 Бонусные балансы");
         bonusButton.setCallbackData("inline_admin_bonus_manage");
         row5.add(bonusButton);
 
-        // Шестой ряд - навигация
+        // Шестой ряд - рассылка
         List<InlineKeyboardButton> row6 = new ArrayList<>();
+        InlineKeyboardButton broadcastButton = new InlineKeyboardButton();
+        broadcastButton.setText("📢 Рассылка");
+        broadcastButton.setCallbackData("inline_admin_broadcast");
+        row6.add(broadcastButton);
+
+        // Седьмой ряд - навигация
+        List<InlineKeyboardButton> row7 = new ArrayList<>();
         InlineKeyboardButton mainMenuButton = new InlineKeyboardButton();
         mainMenuButton.setText("💎 Главное меню");
         mainMenuButton.setCallbackData("inline_main_menu");
-        row6.add(mainMenuButton);
+        row7.add(mainMenuButton);
 
         rows.add(row1);
         rows.add(row2);
@@ -4766,13 +6152,30 @@ public class MessageProcessor {
         rows.add(row4);
         rows.add(row5);
         rows.add(row6);
+        rows.add(row7);
+
 
         markup.setKeyboard(rows);
         return markup;
     }
 
-    private void showEnterAmountMenu(Long chatId, String currency, MyBot bot) {
-        String message = String.format("💎 Введите сумму в %s:", currency);
+    private void showEnterAmountMenuRub(Long chatId, User user, MyBot bot) {
+        String operationType = currentOperation.get(user.getId()).contains("BUY") ? "купить" : "продать";
+        String message = String.format("💎 Введите сумму в рублях (RUB) которую хотите %s:",
+                operationType);
+
+        InlineKeyboardMarkup keyboard = createBackAndMainMenuKeyboard();
+        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, keyboard);
+        lastMessageId.put(chatId, messageId);
+    }
+
+    private void showEnterAmountMenu(Long chatId, User user, CryptoCurrency crypto, MyBot bot) {
+        String operationType = currentOperation.get(user.getId()).contains("BUY") ? "купить" : "продать";
+        String message = String.format("💎 Введите количество %s (%s) которое хотите %s:",
+                crypto.getDisplayName(),
+                crypto.getSymbol(),
+                operationType);
+
         InlineKeyboardMarkup inlineKeyboard = createEnterAmountInlineKeyboard();
         int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
         lastMessageId.put(chatId, messageId);
@@ -4785,7 +6188,6 @@ public class MessageProcessor {
         int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
         lastMessageId.put(chatId, messageId);
     }
-
     private InlineKeyboardMarkup createTimeFilterInlineKeyboard() {
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
@@ -4973,12 +6375,12 @@ public class MessageProcessor {
         int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, keyboard);
         lastMessageId.put(chatId, messageId);
     }
-
     private InlineKeyboardMarkup createAdminApplicationManagementKeyboard(Long applicationId) {
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
 
-        // Первый ряд - основные статусы
+        // === ИЗМЕНЕНИЕ СТАТУСА ЗАЯВКИ ===
+        // Первый ряд - основные действия
         List<InlineKeyboardButton> row1 = new ArrayList<>();
         InlineKeyboardButton inWorkButton = new InlineKeyboardButton();
         inWorkButton.setText("🟡 В работу");
@@ -4990,7 +6392,7 @@ public class MessageProcessor {
         paidButton.setCallbackData("inline_admin_app_paid_" + applicationId);
         row1.add(paidButton);
 
-        // Второй ряд
+        // Второй ряд - завершение и отмена
         List<InlineKeyboardButton> row2 = new ArrayList<>();
         InlineKeyboardButton completedButton = new InlineKeyboardButton();
         completedButton.setText("✅ Выполнено");
@@ -5002,26 +6404,29 @@ public class MessageProcessor {
         cancelButton.setCallbackData("inline_admin_app_cancel_" + applicationId);
         row2.add(cancelButton);
 
-        // Третий ряд
+        // === РАБОТА С ПОЛЬЗОВАТЕЛЕМ ===
+        // Третий ряд - информация и связь
         List<InlineKeyboardButton> row3 = new ArrayList<>();
-        InlineKeyboardButton freeButton = new InlineKeyboardButton();
-        freeButton.setText("🟢 Свободна");
-        freeButton.setCallbackData("inline_admin_app_free_" + applicationId);
-        row3.add(freeButton);
-
-        // Четвертый ряд - дополнительная информация
-        List<InlineKeyboardButton> row4 = new ArrayList<>();
         InlineKeyboardButton userInfoButton = new InlineKeyboardButton();
         userInfoButton.setText("👤 Инфо о пользователе");
         userInfoButton.setCallbackData("inline_admin_app_userinfo_" + applicationId);
-        row4.add(userInfoButton);
+        row3.add(userInfoButton);
 
         InlineKeyboardButton contactButton = new InlineKeyboardButton();
-        contactButton.setText("📞 Связаться");
+        contactButton.setText("💬 Написать");
         contactButton.setUrl("https://t.me/" + (applicationService.find(applicationId).getUser().getUsername() != null ? applicationService.find(applicationId).getUser().getUsername() : "cosanostra_support"));
-        row4.add(contactButton);
+        row3.add(contactButton);
 
-        // Пятый ряд - навигация
+        // === ДОПОЛНИТЕЛЬНЫЕ ДЕЙСТВИЯ ===
+        // Четвертый ряд - дополнительные статусы
+        List<InlineKeyboardButton> row4 = new ArrayList<>();
+        InlineKeyboardButton freeButton = new InlineKeyboardButton();
+        freeButton.setText("🟢 Освободить");
+        freeButton.setCallbackData("inline_admin_app_free_" + applicationId);
+        row4.add(freeButton);
+
+        // === НАВИГАЦИЯ ===
+        // Пятый ряд - мои заявки и все заявки
         List<InlineKeyboardButton> row5 = new ArrayList<>();
         InlineKeyboardButton myAppsButton = new InlineKeyboardButton();
         myAppsButton.setText("👨‍💼 Мои заявки");
@@ -5033,7 +6438,7 @@ public class MessageProcessor {
         allAppsButton.setCallbackData("inline_admin_all");
         row5.add(allAppsButton);
 
-        // Шестой ряд
+        // Шестой ряд - навигация
         List<InlineKeyboardButton> row6 = new ArrayList<>();
         InlineKeyboardButton backButton = new InlineKeyboardButton();
         backButton.setText("🔙 Назад");
@@ -5308,6 +6713,538 @@ public class MessageProcessor {
 
         return true;
     }
+
+    private void processBroadcastMessage(Long chatId, User user, Update update, MyBot bot) {
+        try {
+            System.out.println("DEBUG: Processing broadcast message");
+
+            if (update.getMessage() == null) {
+                System.out.println("DEBUG: No message in update");
+                return;
+            }
+
+            System.out.println("DEBUG: Message type: " + (update.getMessage().hasText() ? "text" : "other"));
+
+            // Принимаем любое сообщение в состоянии ADMIN_BROADCAST_MESSAGE
+
+            // Получаем список всех активных пользователей
+            List<User> activeUsers = userService.findAllActiveUsers();
+            System.out.println("DEBUG: Found " + activeUsers.size() + " active users for broadcast");
+
+            if (activeUsers.isEmpty()) {
+                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
+                    "❌ Нет активных пользователей для рассылки",
+                    createBackToAdminKeyboard()));
+                return;
+            }
+
+            // Логируем первых 5 пользователей для отладки
+            for (int i = 0; i < Math.min(5, activeUsers.size()); i++) {
+                User targetUser = activeUsers.get(i);
+                System.out.println("DEBUG: User " + (i+1) + ": ID=" + targetUser.getId() + ", TelegramID=" + targetUser.getTelegramId() + ", Username=" + targetUser.getUsername());
+            }
+
+            // Счетчики для отчета
+            int successCount = 0;
+            int errorCount = 0;
+
+            // Рассылаем сообщение всем пользователям
+            System.out.println("DEBUG: Starting broadcast to " + activeUsers.size() + " users");
+            for (User targetUser : activeUsers) {
+                try {
+                    System.out.println("DEBUG: Sending message to user " + targetUser.getId() + " (" + targetUser.getUsername() + ")");
+
+                    // Для текстовых сообщений используем sendMessage, для остальных - copyMessage
+                    if (update.getMessage().hasText()) {
+                        bot.sendMessage(targetUser.getTelegramId(), update.getMessage().getText());
+                        System.out.println("DEBUG: Sent text message to user " + targetUser.getId());
+                    } else {
+                        bot.copyMessage(targetUser.getTelegramId(), chatId, update.getMessage().getMessageId());
+                        System.out.println("DEBUG: Copied message to user " + targetUser.getId());
+                    }
+                    successCount++;
+                } catch (Exception e) {
+                    errorCount++;
+                    System.err.println("Ошибка отправки сообщения пользователю " + targetUser.getId() + ": " + e.getMessage());
+                }
+            }
+
+            // Отправляем отчет администратору
+            String reportMessage = String.format(
+                "📢 Рассылка завершена!\n\n" +
+                "✅ Успешно отправлено: %d\n" +
+                "❌ Ошибок: %d\n" +
+                "👥 Всего пользователей: %d",
+                successCount, errorCount, activeUsers.size()
+            );
+
+            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, reportMessage, createBackToAdminKeyboard()));
+
+            // Возвращаем в главное меню админа
+            user.setState(UserState.ADMIN_MAIN_MENU);
+            userService.update(user);
+
+        } catch (Exception e) {
+            System.err.println("Ошибка при обработке рассылки: " + e.getMessage());
+            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId,
+                "❌ Ошибка при обработке рассылки: " + e.getMessage(),
+                createBackToAdminKeyboard()));
+
+            user.setState(UserState.ADMIN_MAIN_MENU);
+            userService.update(user);
+        }
+    }
+
+    private String formatCryptoName(ValueType valueType) {
+        if (valueType == null) return "Неизвестно";
+        switch (valueType) {
+            case BTC: return "Bitcoin (BTC)";
+            case LTC: return "Litecoin (LTC)";
+            case XMR: return "Monero (XMR)";
+            case RUB: return "Рубли (RUB)";
+            default: return valueType.name();
+        }
+    }
+
+    private String formatApplicationAmount(Application application) {
+        if (application == null) return "0";
+
+        BigDecimal amount = null;
+        ValueType currencyType = null;
+
+        // Определяем сумму и тип валюты для отображения
+        if (application.getUserValueGiveType() == ValueType.RUB) {
+            amount = application.getCalculatedGiveValue();
+            currencyType = ValueType.RUB;
+        } else if (application.getUserValueGetType() == ValueType.RUB) {
+            amount = application.getCalculatedGetValue();
+            currencyType = ValueType.RUB;
+        } else if (application.getUserValueGiveType() == ValueType.BTC) {
+            amount = application.getCalculatedGiveValue();
+            currencyType = ValueType.BTC;
+        } else if (application.getUserValueGetType() == ValueType.BTC) {
+            amount = application.getCalculatedGetValue();
+            currencyType = ValueType.BTC;
+        } else if (application.getUserValueGiveType() == ValueType.LTC) {
+            amount = application.getCalculatedGiveValue();
+            currencyType = ValueType.LTC;
+        } else if (application.getUserValueGetType() == ValueType.LTC) {
+            amount = application.getCalculatedGetValue();
+            currencyType = ValueType.LTC;
+        } else if (application.getUserValueGiveType() == ValueType.XMR) {
+            amount = application.getCalculatedGiveValue();
+            currencyType = ValueType.XMR;
+        } else if (application.getUserValueGetType() == ValueType.XMR) {
+            amount = application.getCalculatedGetValue();
+            currencyType = ValueType.XMR;
+        }
+
+        if (amount == null) return "Неизвестно";
+
+        // Форматируем в зависимости от типа валюты
+        if (currencyType == ValueType.RUB) {
+            return formatRubAmount(amount);
+        } else {
+            // Для криптовалют конвертируем ValueType в CryptoCurrency
+            CryptoCurrency crypto = null;
+            if (currencyType == ValueType.BTC) {
+                crypto = CryptoCurrency.BTC;
+            } else if (currencyType == ValueType.LTC) {
+                crypto = CryptoCurrency.LTC;
+            } else if (currencyType == ValueType.XMR) {
+                crypto = CryptoCurrency.XMR;
+            }
+
+            if (crypto != null) {
+                return formatCryptoAmount(amount, crypto);
+            } else {
+                return formatRubAmount(amount); // fallback
+            }
+        }
+    }
+
+    /**
+     * Показывает меню пользователей для админа
+     */
+    private void showAdminUsersMenu(Long chatId, MyBot bot) {
+        String message = "👥 Управление пользователями\n\nВыберите действие:";
+
+        InlineKeyboardMarkup inlineKeyboard = createAdminUsersMenuInlineKeyboard();
+        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
+        lastMessageId.put(chatId, messageId);
+    }
+
+    /**
+     * Показывает форму поиска пользователя в меню пользователей
+     */
+    private void showAdminUsersSearch(Long chatId, MyBot bot) {
+        String message = "🔍 Поиск пользователя\n\nВведите username (без @) или ID пользователя:";
+
+        InlineKeyboardMarkup inlineKeyboard = createBackToAdminUsersMenuKeyboard();
+        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
+        lastMessageId.put(chatId, messageId);
+    }
+
+    /**
+     * Обрабатывает меню пользователей админа
+     */
+    private void processAdminUsersMenu(Long chatId, User user, String text, MyBot bot) {
+        switch (text) {
+            case "🔙 Назад":
+                user.setState(UserState.ADMIN_MAIN_MENU);
+                userService.update(user);
+                showAdminMainMenu(chatId, bot);
+                break;
+            default:
+                showAdminUsersMenu(chatId, bot);
+                break;
+        }
+    }
+
+    /**
+     * Обрабатывает поиск пользователя в меню пользователей
+     */
+    private void processAdminUsersSearchUser(Long chatId, User user, String text, MyBot bot) {
+        try {
+            User foundUser = null;
+
+            // Проверяем, является ли текст числом (ID пользователя)
+            try {
+                Long userId = Long.parseLong(text.trim());
+                foundUser = userService.find(userId);
+            } catch (NumberFormatException e) {
+                // Если не число, ищем по username
+                foundUser = userService.findByUsername(text.trim());
+            }
+
+            if (foundUser != null) {
+                // Показываем детали найденного пользователя
+                showUserDetailsForAdmin(chatId, foundUser, bot);
+                user.setState(UserState.ADMIN_USERS_MENU);
+                userService.update(user);
+            } else {
+                String message = "❌ Пользователь не найден. Попробуйте другой username или ID.";
+                int messageId = bot.sendMessageWithKeyboard(chatId, message, createBackToAdminUsersMenuKeyboard());
+                lastMessageId.put(chatId, messageId);
+            }
+        } catch (Exception e) {
+            System.err.println("Ошибка при поиске пользователя: " + e.getMessage());
+            String message = "❌ Ошибка при поиске пользователя. Попробуйте еще раз.";
+            int messageId = bot.sendMessageWithKeyboard(chatId, message, createBackToAdminUsersMenuKeyboard());
+            lastMessageId.put(chatId, messageId);
+        }
+    }
+
+    /**
+     * Показывает детали пользователя для админа в меню пользователей
+     */
+    private void showUserDetailsForAdmin(Long chatId, User targetUser, MyBot bot) {
+        String message = String.format("""
+                    👤 Информация о пользователе:
+
+                    🆔 ID: %d
+                    📞 Telegram ID: %d
+                    👤 Имя: %s %s
+                    📱 Username: @%s
+
+                    📊 Статистика:
+                    • Всего заявок: %d
+                    • Успешных: %d
+                    • Потрачено: %.2f ₽
+                    • Получено: %.2f ₽
+                    • Бонусный баланс: %.2f ₽
+
+                    📈 Реферальная система:
+                    • Приглашено: %d
+                    • Заработано: %.2f ₽
+                    """,
+                targetUser.getId(),
+                targetUser.getTelegramId(),
+                targetUser.getFirstName(),
+                targetUser.getLastName() != null ? targetUser.getLastName() : "",
+                targetUser.getUsername() != null ? targetUser.getUsername() : "нет",
+                targetUser.getTotalApplications(),
+                targetUser.getCompletedBuyApplications() + targetUser.getCompletedSellApplications(),
+                targetUser.getTotalBuyAmount(),
+                targetUser.getTotalSellAmount(),
+                targetUser.getBonusBalance(),
+                targetUser.getReferralCount(),
+                targetUser.getReferralEarnings()
+        );
+
+        InlineKeyboardMarkup inlineKeyboard = createBackToAdminUsersMenuKeyboard();
+        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
+        lastMessageId.put(chatId, messageId);
+    }
+
+    /**
+     * Создает клавиатуру для меню пользователей
+     */
+    private InlineKeyboardMarkup createAdminUsersMenuInlineKeyboard() {
+        InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+
+        // Первый ряд - все пользователи
+        List<InlineKeyboardButton> row1 = new ArrayList<>();
+        InlineKeyboardButton allUsersButton = new InlineKeyboardButton();
+        allUsersButton.setText("👥 Все пользователи");
+        allUsersButton.setCallbackData("inline_admin_all_users");
+        row1.add(allUsersButton);
+
+        // Второй ряд - последние пользователи и поиск
+        List<InlineKeyboardButton> row2 = new ArrayList<>();
+        InlineKeyboardButton recentUsersButton = new InlineKeyboardButton();
+        recentUsersButton.setText("🆕 Последние пользователи");
+        recentUsersButton.setCallbackData("inline_admin_recent_users");
+        row2.add(recentUsersButton);
+
+        InlineKeyboardButton searchUserButton = new InlineKeyboardButton();
+        searchUserButton.setText("🔍 Поиск пользователя");
+        searchUserButton.setCallbackData("inline_admin_users_search");
+        row2.add(searchUserButton);
+
+        // Третий ряд - навигация
+        List<InlineKeyboardButton> row3 = new ArrayList<>();
+        InlineKeyboardButton backButton = new InlineKeyboardButton();
+        backButton.setText("🔙 Назад");
+        backButton.setCallbackData("inline_admin_back");
+        row3.add(backButton);
+
+        rows.add(row1);
+        rows.add(row2);
+        rows.add(row3);
+
+        markup.setKeyboard(rows);
+        return markup;
+    }
+
+    /**
+     * Показывает всех пользователей с пагинацией
+     */
+    private void showAllUsers(Long chatId, User user, MyBot bot) {
+        int page = adminAllUsersPage.getOrDefault(user.getId(), 0);
+        int pageSize = 10;
+
+        List<User> allUsers = userService.findAllActiveUsers();
+        int totalUsers = allUsers.size();
+        int totalPages = (int) Math.ceil((double) totalUsers / pageSize);
+
+        System.out.println("DEBUG showAllUsers: page=" + page + ", totalUsers=" + totalUsers + ", totalPages=" + totalPages);
+
+        // Корректируем страницу, если она вышла за пределы
+        if (page >= totalPages && totalPages > 0) {
+            page = totalPages - 1;
+            adminAllUsersPage.put(user.getId(), page);
+        }
+
+        // Получаем пользователей для текущей страницы
+        List<User> pageUsers = allUsers.stream()
+                .sorted((u1, u2) -> u2.getCreatedAt().compareTo(u1.getCreatedAt())) // новые сначала
+                .skip(page * pageSize)
+                .limit(pageSize)
+                .collect(Collectors.toList());
+
+        StringBuilder message = new StringBuilder();
+
+        if (pageUsers.isEmpty()) {
+            message.append("📭 Нет пользователей в системе");
+        } else {
+            message.append(String.format("👥 Все пользователи (стр. %d/%d):\n\n", page + 1, totalPages));
+
+            for (int i = 0; i < pageUsers.size(); i++) {
+                User u = pageUsers.get(i);
+                String username = u.getUsername() != null ? "@" + u.getUsername() : "нет_username";
+                String fullName = u.getFirstName() + (u.getLastName() != null ? " " + u.getLastName() : "");
+
+                message.append(String.format("""
+                            👤 %s
+                            🆔 ID: %d | %s
+                            📅 Регистрация: %s
+                            📊 Заявок: %d | 💰 Обменов: %.2f ₽
+                            --------------------
+                            """,
+                        fullName,
+                        u.getId(),
+                        username,
+                        u.getCreatedAt().format(DateTimeFormatter.ofPattern("dd.MM.yy HH:mm")),
+                        u.getTotalApplications(),
+                        u.getTotalBuyAmount().add(u.getTotalSellAmount())
+                ));
+            }
+        }
+
+        // Создаем клавиатуру с пагинацией
+        System.out.println("DEBUG showAllUsers: Creating keyboard with page=" + page + ", totalPages=" + totalPages);
+        InlineKeyboardMarkup inlineKeyboard = createAdminUsersPaginatedKeyboard(page, totalPages, "all_users");
+        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message.toString(), inlineKeyboard);
+        lastMessageId.put(chatId, messageId);
+    }
+
+    /**
+     * Показывает последних 5 пользователей
+     */
+    private void showRecentUsers(Long chatId, User user, MyBot bot) {
+        List<User> recentUsers = userService.findRecentUsers();
+
+        StringBuilder message = new StringBuilder();
+        message.append("🆕 Последние зарегистрированные пользователи:\n\n");
+
+        if (recentUsers.isEmpty()) {
+            message.append("📭 Нет пользователей в системе");
+        } else {
+            for (int i = 0; i < recentUsers.size(); i++) {
+                User u = recentUsers.get(i);
+                String username = u.getUsername() != null ? "@" + u.getUsername() : "нет_username";
+                String fullName = u.getFirstName() + (u.getLastName() != null ? " " + u.getLastName() : "");
+
+                message.append(String.format("""
+                            👤 %s
+                            🆔 ID: %d | %s
+                            📅 Регистрация: %s
+                            📊 Заявок: %d | 💰 Обменов: %.2f ₽
+                            --------------------
+                            """,
+                        fullName,
+                        u.getId(),
+                        username,
+                        u.getCreatedAt().format(DateTimeFormatter.ofPattern("dd.MM.yy HH:mm")),
+                        u.getTotalApplications(),
+                        u.getTotalBuyAmount().add(u.getTotalSellAmount())
+                ));
+            }
+        }
+
+        InlineKeyboardMarkup inlineKeyboard = createBackToAdminUsersMenuKeyboard();
+        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message.toString(), inlineKeyboard);
+        lastMessageId.put(chatId, messageId);
+    }
+
+    /**
+     * Обрабатывает отображение всех пользователей
+     */
+    private void processAdminViewAllUsers(Long chatId, User user, String text, MyBot bot) {
+        if ("🔙 Назад".equals(text)) {
+            user.setState(UserState.ADMIN_USERS_MENU);
+            userService.update(user);
+            showAdminUsersMenu(chatId, bot);
+        } else {
+            showAllUsers(chatId, user, bot);
+        }
+    }
+
+    /**
+     * Обрабатывает отображение последних пользователей
+     */
+    private void processAdminViewRecentUsers(Long chatId, User user, String text, MyBot bot) {
+        if ("🔙 Назад".equals(text)) {
+            user.setState(UserState.ADMIN_USERS_MENU);
+            userService.update(user);
+            showAdminUsersMenu(chatId, bot);
+        } else {
+            showRecentUsers(chatId, user, bot);
+        }
+    }
+
+    /**
+     * Создает клавиатуру с пагинацией для пользователей
+     */
+    private InlineKeyboardMarkup createAdminUsersPaginatedKeyboard(int currentPage, int totalPages, String type) {
+        System.out.println("DEBUG createAdminUsersPaginatedKeyboard: currentPage=" + currentPage + ", totalPages=" + totalPages + ", type=" + type);
+        InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+
+        // Ряд с информацией о странице
+        if (totalPages > 1) {
+            List<InlineKeyboardButton> infoRow = new ArrayList<>();
+            InlineKeyboardButton infoButton = new InlineKeyboardButton();
+            infoButton.setText(String.format("📄 %d/%d", currentPage + 1, totalPages));
+            infoButton.setCallbackData("inline_admin_users_page_info");
+            infoRow.add(infoButton);
+            rows.add(infoRow);
+        }
+
+        // Ряд с навигацией
+        if (totalPages > 1) {
+            List<InlineKeyboardButton> navRow = new ArrayList<>();
+
+            if (currentPage > 0) {
+                InlineKeyboardButton prevButton = new InlineKeyboardButton();
+                prevButton.setText("⬅️ Назад");
+                prevButton.setCallbackData("inline_admin_users_prev_all_users");
+                navRow.add(prevButton);
+            }
+
+            if (currentPage < totalPages - 1) {
+                InlineKeyboardButton nextButton = new InlineKeyboardButton();
+                nextButton.setText("Вперед ➡️");
+                nextButton.setCallbackData("inline_admin_users_next_all_users");
+                navRow.add(nextButton);
+            }
+
+            if (!navRow.isEmpty()) {
+                rows.add(navRow);
+            }
+        }
+
+        // Ряд с кнопкой назад
+        List<InlineKeyboardButton> backRow = new ArrayList<>();
+        InlineKeyboardButton backButton = new InlineKeyboardButton();
+        backButton.setText("🔙 Назад");
+        backButton.setCallbackData("inline_admin_users_back");
+        backRow.add(backButton);
+        rows.add(backRow);
+
+        markup.setKeyboard(rows);
+        return markup;
+    }
+
+    /**
+     * Создает клавиатуру для возврата в меню пользователей
+     */
+    private InlineKeyboardMarkup createBackToAdminUsersMenuKeyboard() {
+        InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+
+        List<InlineKeyboardButton> row = new ArrayList<>();
+        InlineKeyboardButton backButton = new InlineKeyboardButton();
+        backButton.setText("🔙 Назад");
+        backButton.setCallbackData("inline_admin_users_back");
+        row.add(backButton);
+        rows.add(row);
+
+        markup.setKeyboard(rows);
+        return markup;
+    }
+
+    /**
+     * Отправляет уведомление админам о новом пользователе
+     */
+    private void sendNewUserNotificationToAdmins(User user, MyBot bot) {
+        try {
+            String notification = String.format(
+                "👤 Новый пользователь!\n\n" +
+                "🆔 ID: %d\n" +
+                "👤 Имя: %s\n" +
+                "📝 Username: @%s\n" +
+                "📅 Дата регистрации: %s\n" +
+                "📊 Всего пользователей: %d",
+                user.getTelegramId(),
+                user.getFirstName() + (user.getLastName() != null ? " " + user.getLastName() : ""),
+                user.getUsername() != null ? user.getUsername() : "не указан",
+                user.getCreatedAt() != null ? user.getCreatedAt().toString() : "неизвестно",
+                userService.getActiveUsersCount()
+            );
+
+            for (Long adminId : adminConfig.getAdminUserIds()) {
+                try {
+                    bot.sendMessage(adminId, notification);
+                } catch (Exception e) {
+                    System.err.println("Не удалось отправить уведомление админу " + adminId + ": " + e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Ошибка при отправке уведомления о новом пользователе: " + e.getMessage());
+        }
+    }
+
 }
-
-

@@ -23,6 +23,9 @@ public class ReferralCode {
     @JoinColumn(name = "owner_id", nullable = false)
     private User owner;
 
+    @Column(name = "owner_id", insertable = false, updatable = false)
+    private Long ownerId;
+
     private String description;
     private Boolean isActive = true;
 
@@ -37,11 +40,34 @@ public class ReferralCode {
     @Column(precision = 5, scale = 2)
     private BigDecimal rewardPercent; // Процент от заявок реферала
 
+    private LocalDateTime expiresAt;
+    private Integer usedCount = 0;
+
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
+    }
+
+    // Геттеры и сеттеры для совместимости
+    public Long getOwnerId() {
+        return owner != null ? owner.getId() : ownerId;
+    }
+
+    public void setOwnerId(Long ownerId) {
+        this.ownerId = ownerId;
+    }
+
+    public User getUser() {
+        return owner;
+    }
+
+    public void setUser(User user) {
+        this.owner = user;
+        if (user != null) {
+            this.ownerId = user.getId();
+        }
     }
 }

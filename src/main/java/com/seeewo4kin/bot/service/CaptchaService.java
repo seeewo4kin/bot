@@ -6,14 +6,12 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 @Service
 public class CaptchaService {
     private final ConcurrentMap<Long, String> userCaptchaAnswers = new ConcurrentHashMap<>();
-    private final Random random = new Random();
 
     public CaptchaChallenge generateCaptcha(Long userId) {
         // Выбираем случайный смайлик как правильный ответ
