@@ -2,9 +2,11 @@ package com.seeewo4kin.bot.Config;
 
 import com.seeewo4kin.bot.Entity.CommissionRange;
 import com.seeewo4kin.bot.repository.CommissionRangeRepository;
-import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationListener;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.event.ContextRefreshedEvent;
+import org.springframework.lang.NonNull;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -13,10 +15,11 @@ import java.util.Map;
 import java.util.TreeMap;
 
 @Configuration
-public class CommissionConfig {
+public class CommissionConfig implements ApplicationListener<ContextRefreshedEvent> {
 
     private final CommissionRangeRepository commissionRangeRepository;
     private final TreeMap<BigDecimal, BigDecimal> commissionRanges = new TreeMap<>();
+    private boolean initialized = false;
     
     // Значения по умолчанию из application.properties
     private final BigDecimal range1Min, range1Max, range1Percent;
@@ -75,8 +78,14 @@ public class CommissionConfig {
         this.range7Percent = range7Percent;
     }
 
-    @PostConstruct
-    public void init() {
+    @Override
+    public void onApplicationEvent(@NonNull ContextRefreshedEvent event) {
+        // Защита от повторной инициализации (ContextRefreshedEvent может вызываться несколько раз)
+        if (initialized) {
+            return;
+        }
+        
+        // Инициализация происходит после полной загрузки контекста Spring
         // Удаляем диапазоны 25000+ и 30000+ если они есть
         removeUnwantedRanges();
         
@@ -86,6 +95,8 @@ public class CommissionConfig {
         if (commissionRanges.isEmpty()) {
             initializeDefaultRanges();
         }
+        
+        initialized = true;
     }
     
     private void removeUnwantedRanges() {

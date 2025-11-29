@@ -50,7 +50,13 @@ public class MyBot extends TelegramLongPollingBot {
             Message sentMessage = execute(message);
             return sentMessage.getMessageId();
         } catch (TelegramApiException e) {
-            e.printStackTrace();
+            // Не выводим полный стек трейс для обычных ошибок типа "chat not found"
+            String errorMessage = e.getMessage();
+            if (errorMessage != null && errorMessage.contains("chat not found")) {
+                System.err.println("Chat not found for ID: " + chatId + " - user may not have started the bot");
+            } else {
+                System.err.println("Error sending message to " + chatId + ": " + errorMessage);
+            }
             return -1;
         }
     }

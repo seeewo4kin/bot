@@ -13,7 +13,7 @@ import java.util.Optional;
 public interface ReferralUsageRepository extends JpaRepository<ReferralUsage, Long> {
 
     // Метод 1: Использование @Query для поиска по ownerId через связь
-    @Query("SELECT ru FROM ReferralUsage ru WHERE ru.referralCode.user.id = :ownerId")
+    @Query("SELECT ru FROM ReferralUsage ru WHERE ru.referralCode.owner.id = :ownerId")
     List<ReferralUsage> findByReferralCodeOwnerId(@Param("ownerId") Long ownerId);
 
     // Метод 2: Поиск по коду приглашения
@@ -31,10 +31,10 @@ public interface ReferralUsageRepository extends JpaRepository<ReferralUsage, Lo
     @Query("SELECT COUNT(ru) FROM ReferralUsage ru WHERE ru.referralCode.code = :referralCode")
     long countByReferralCode(@Param("referralCode") String referralCode);
 
-    @Query("SELECT ru FROM ReferralUsage ru WHERE ru.referralCode.code = :referralCode AND ru.user.isActive = true")
+    @Query("SELECT ru FROM ReferralUsage ru WHERE ru.referralCode.code = :referralCode")
     List<ReferralUsage> findActiveUsagesByReferralCode(@Param("referralCode") String referralCode);
 
     // Метод 7: Получить все использования с информацией о коде и пользователе
-    @Query("SELECT ru FROM ReferralUsage ru JOIN FETCH ru.referralCode JOIN FETCH ru.user WHERE ru.referralCode.user.id = :ownerId")
+    @Query("SELECT ru FROM ReferralUsage ru JOIN FETCH ru.referralCode JOIN FETCH ru.user WHERE ru.referralCode.owner.id = :ownerId")
     List<ReferralUsage> findByOwnerIdWithDetails(@Param("ownerId") Long ownerId);
 }

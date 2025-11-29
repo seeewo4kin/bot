@@ -17,9 +17,6 @@ import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
@@ -199,6 +196,18 @@ public class MessageProcessor {
         // Обработка команды /start в любом состоянии
         if ("/start".equals(text)) {
             processStartCommand(update, bot);
+            return;
+        }
+        
+        // Обработка команды /ref CODE для установки реферального кода
+        if (text != null && (text.startsWith("/ref ") || text.startsWith("/referral ") || (text.startsWith("/ref") && text.length() > 4))) {
+            processReferralCodeCommand(update, bot);
+            return;
+        }
+
+        // Обработка команды /refstatus для проверки статуса реферального кода
+        if (text != null && text.equals("/refstatus")) {
+            processReferralStatusCommand(update, bot);
             return;
         }
 
@@ -1662,41 +1671,82 @@ public class MessageProcessor {
         org.telegram.telegrambots.meta.api.objects.User telegramUser = update.getMessage().getFrom();
         String text = update.getMessage().getText();
 
+        // Логируем полученную команду для отладки
+        System.out.println("DEBUG: Received /start command with text: '" + text + "'");
+
         // Очищаем весь чат при команде /start
         clearChatExceptApplications(chatId, bot);
 
         User user = userService.findOrCreateUser(telegramUser);
+        
+        // Перезагружаем пользователя из базы, чтобы получить актуальные данные
+        user = userService.find(user.getId());
+        
+        System.out.println("DEBUG: User loaded - ID: " + user.getId() + ", usedReferralCode: '" + user.getUsedReferralCode() + "', bonusBalance: " + user.getBonusBalance());
 
         // Отправляем уведомление админам о новом пользователе
         if (userService.wasUserCreated(user, telegramUser)) {
             sendNewUserNotificationToAdmins(user, bot);
         }
 
-        // Обработка реферальных ссылок (формат: /start ref_CODE или /start CODE)
-        if (text.contains(" ")) {
-            String[] parts = text.split(" ");
+        // Обработка реферальных ссылок (формат: /start refCODE или /start ref_CODE)
+        // Если параметр начинается с ref, обрабатываем как установку реферального кода
+        boolean referralCodeProcessed = false;
+        if (text != null && text.contains(" ")) {
+            String[] parts = text.split(" ", 2);
             if (parts.length > 1) {
                 String refCodeParam = parts[1];
-                String refCode = null;
-                
-                // Поддерживаем формат ref_CODE
-                if (refCodeParam.startsWith("ref_")) {
-                    refCode = refCodeParam.substring(4); // Убираем префикс "ref_"
-                } else {
-                    refCode = refCodeParam; // Просто код без префикса
-                }
-                
-                // Ищем реферальный код в базе
-                ReferralCode referralCode = referralService.findByCode(refCode);
-                if (referralCode != null && referralCode.getIsActive()) {
-                    User inviter = referralCode.getUser();
-                    if (inviter != null && !inviter.getId().equals(user.getId())) {
-                        // Сохраняем реферальный код пользователю
-                        user.setUsedReferralCode(refCode);
-                        userService.update(user);
-                        
-                        // ИСПРАВЛЕННЫЙ ВЫЗОВ: передаем код
-                        referralService.processReferralRegistration(inviter, user, refCode);
+
+                // Если параметр начинается с ref (без подчеркивания), обрабатываем как установку кода
+                if (refCodeParam.startsWith("ref") && refCodeParam.length() > 3) {
+                    String refCode = refCodeParam.substring(3).toUpperCase().trim(); // Убираем "ref"
+                    System.out.println("DEBUG: Processing referral link with code: '" + refCode + "' from param: '" + refCodeParam + "'");
+
+                    // Проверяем, что пользователь может использовать реферальный код
+                    boolean canUseReferralCode = user.getUsedReferralCode() == null ||
+                                               user.getUsedReferralCode().trim().isEmpty();
+
+                    if (canUseReferralCode) {
+                        // Ищем реферальный код в базе
+                        ReferralCode referralCode = referralService.findByCode(refCode);
+
+                        if (referralCode != null && referralCode.getIsActive()) {
+                            User inviter = referralCode.getOwner();
+                            if (inviter != null && !inviter.getId().equals(user.getId())) {
+                                try {
+                                    // Обрабатываем регистрацию по реферальной ссылке
+                                    referralService.processReferralRegistration(inviter, user, refCode);
+
+                                    // Обновляем пользователя после обработки
+                                    user = userService.find(user.getId());
+
+                                    // Отправляем сообщение о начислении бонуса
+                                    String bonusMessage = "🎉 Поздравляем!\n\n" +
+                                            "✅ Вам начислено 100 бонусных рублей на баланс за использование реферального кода!\n\n" +
+                                            "💰 Ваш бонусный баланс: " + formatRubAmount(user.getBonusBalance()) + " ₽\n\n" +
+                                            "Теперь вы стали рефералом пользователя @" + (inviter.getUsername() != null ? inviter.getUsername() : "ID" + inviter.getId());
+                                    bot.sendMessage(chatId, bonusMessage);
+
+                                    referralCodeProcessed = true;
+                                    System.out.println("DEBUG: Successfully processed referral registration from link");
+                                } catch (Exception e) {
+                                    System.err.println("ERROR: Failed to process referral registration: " + e.getMessage());
+                                    e.printStackTrace();
+                                }
+                            } else {
+                                System.out.println("DEBUG: Invalid inviter or self-referral attempt");
+                            }
+                        } else {
+                            System.out.println("DEBUG: Referral code not found or inactive - code: '" + refCode + "'");
+                        }
+                    } else {
+                        System.out.println("DEBUG: User already has a referral code: '" + user.getUsedReferralCode() + "'");
+                    }
+
+                    // Если код был успешно обработан, не показываем приветственное сообщение
+                    // (только для новых пользователей показываем приветствие)
+                    if (referralCodeProcessed && user.getState() != UserState.START) {
+                        return; // Выходим, не показывая приветствие
                     }
                 }
             }
@@ -1732,6 +1782,157 @@ public class MessageProcessor {
         showCaptcha(chatId, user, bot);
     }
 
+    /**
+     * Обрабатывает команду /ref CODE для установки реферального кода
+     */
+    private void processReferralCodeCommand(Update update, MyBot bot) {
+        Long chatId = update.getMessage().getChatId();
+        org.telegram.telegrambots.meta.api.objects.User telegramUser = update.getMessage().getFrom();
+        String text = update.getMessage().getText();
+
+        System.out.println("DEBUG: Received referral code command: '" + text + "'");
+
+        User user = userService.findOrCreateUser(telegramUser);
+        user = userService.find(user.getId()); // Перезагружаем актуальные данные
+
+        // Извлекаем код из команды /ref CODE или /referral CODE или /refCODE
+        String refCode = null;
+        if (text.startsWith("/ref ")) {
+            refCode = text.substring(5).trim();
+        } else if (text.startsWith("/referral ")) {
+            refCode = text.substring(10).trim();
+        } else if (text.startsWith("/ref") && text.length() > 4) {
+            // /refCODE формат
+            refCode = text.substring(4).trim();
+        }
+
+        // Если код не указан, показываем справку
+        if (refCode == null || refCode.isEmpty()) {
+            String helpMessage = "📋 Использование реферального кода:\n\n" +
+                    "/ref 123456789 - использовать код 123456789\n" +
+                    "/ref123456789 - то же самое без пробела\n\n" +
+                    "💡 Реферальный код - это Telegram ID пригласившего пользователя";
+            bot.sendMessage(chatId, helpMessage);
+            return;
+        }
+
+        if (refCode == null || refCode.isEmpty()) {
+            bot.sendMessage(chatId, "❌ Неверный формат команды. Используйте: /ref CODE или /refCODE");
+            return;
+        }
+
+        // Преобразуем код в верхний регистр
+        refCode = refCode.toUpperCase().trim();
+
+        System.out.println("DEBUG: Extracted referral code from command: '" + refCode + "'");
+
+        // Проверяем, что пользователь может использовать реферальный код
+        boolean canUseReferralCode = user.getUsedReferralCode() == null ||
+                                   user.getUsedReferralCode().trim().isEmpty();
+
+        if (!canUseReferralCode) {
+            String message = "❌ Вы уже использовали реферальный код: " + user.getUsedReferralCode() + "\n\n" +
+                           "Один пользователь может использовать только один реферальный код.";
+            bot.sendMessage(chatId, message);
+            return;
+        }
+
+        // Ищем реферальный код в базе
+        ReferralCode referralCode = referralService.findByCode(refCode);
+
+        if (referralCode == null || !referralCode.getIsActive()) {
+            String message = "❌ Реферальный код не найден или неактивен.\n\n" +
+                           "Пожалуйста, проверьте правильность кода.";
+            bot.sendMessage(chatId, message);
+            return;
+        }
+
+        User inviter = referralCode.getOwner();
+        if (inviter == null) {
+            String message = "❌ Реферальный код не найден в системе.";
+            bot.sendMessage(chatId, message);
+            return;
+        }
+
+        // Проверяем, что пользователь не пытается использовать свой собственный код
+        if (inviter.getId().equals(user.getId())) {
+            String message = "❌ Вы не можете использовать свой собственный реферальный код.";
+            bot.sendMessage(chatId, message);
+            return;
+        }
+
+        // Обрабатываем регистрацию по реферальной ссылке
+        try {
+            referralService.processReferralRegistration(inviter, user, refCode);
+
+            // Обновляем пользователя после обработки
+            user = userService.find(user.getId());
+
+            System.out.println("DEBUG: After processing - user bonus balance: " + user.getBonusBalance() + ", used code: '" + user.getUsedReferralCode() + "'");
+
+            // Отправляем сообщение о начислении бонуса
+            String bonusMessage = "🎉 Поздравляем!\n\n" +
+                    "✅ Вам начислено 100 бонусных рублей на баланс за использование реферального кода!\n\n" +
+                    "💰 Ваш бонусный баланс: " + formatRubAmount(user.getBonusBalance()) + " ₽\n\n" +
+                    "Теперь вы стали рефералом пользователя @" + (inviter.getUsername() != null ? inviter.getUsername() : "ID" + inviter.getId());
+            bot.sendMessage(chatId, bonusMessage);
+
+            System.out.println("DEBUG: Successfully processed referral code command");
+        } catch (Exception e) {
+            System.err.println("ERROR: Failed to process referral code command: " + e.getMessage());
+            e.printStackTrace();
+            bot.sendMessage(chatId, "❌ Произошла ошибка при обработке реферального кода. Попробуйте позже.");
+        }
+    }
+
+    /**
+     * Обрабатывает команду /refstatus для проверки статуса реферального кода
+     */
+    private void processReferralStatusCommand(Update update, MyBot bot) {
+        Long chatId = update.getMessage().getChatId();
+        org.telegram.telegrambots.meta.api.objects.User telegramUser = update.getMessage().getFrom();
+
+        User user = userService.findOrCreateUser(telegramUser);
+        user = userService.find(user.getId());
+
+        StringBuilder statusMessage = new StringBuilder("📊 Статус реферального кода:\n\n");
+
+        // Информация о использованном коде
+        if (user.getUsedReferralCode() != null && !user.getUsedReferralCode().trim().isEmpty()) {
+            statusMessage.append("✅ Использован код: ").append(user.getUsedReferralCode()).append("\n");
+        } else {
+            statusMessage.append("❌ Реферальный код не использован\n");
+        }
+
+        // Информация о собственном коде (TG ID)
+        statusMessage.append("🎫 Ваш реферальный код: ").append(user.getTelegramId()).append("\n");
+        statusMessage.append("📅 Действует: бессрочно\n");
+
+        // Информация о использованном коде
+        if (user.getUsedReferralCode() != null && !user.getUsedReferralCode().trim().isEmpty()) {
+            statusMessage.append("👥 Вы использовали код: ").append(user.getUsedReferralCode()).append("\n");
+
+            // Найдем информацию о пригласившем
+            try {
+                ReferralCode usedCode = referralService.findByCode(user.getUsedReferralCode());
+                if (usedCode != null && usedCode.getOwner() != null) {
+                    User inviter = usedCode.getOwner();
+                    statusMessage.append("🎯 Пригласивший: @").append(inviter.getUsername() != null ? inviter.getUsername() : "ID" + inviter.getTelegramId()).append("\n");
+                }
+            } catch (Exception e) {
+                // Игнорируем ошибки при получении информации
+            }
+        }
+
+        // Статистика рефералов
+        ReferralStatsEmbedded stats = referralService.getReferralStats(user);
+        statusMessage.append("\n📈 Статистика:\n");
+        statusMessage.append("👥 Рефералов 1 уровня: ").append(stats.getLevel1CountSafe()).append("\n");
+        statusMessage.append("👥 Рефералов 2 уровня: ").append(stats.getLevel2CountSafe()).append("\n");
+        statusMessage.append("💰 Заработано: ").append(formatRubAmount(user.getReferralEarnings())).append(" ₽\n");
+
+        bot.sendMessage(chatId, statusMessage.toString());
+    }
 
     private void showCaptcha(Long chatId, User user, MyBot bot) {
         CaptchaService.CaptchaChallenge challenge = captchaService.generateCaptcha(user.getId());
@@ -5635,15 +5836,8 @@ public class MessageProcessor {
         // Получаем актуальную реферальную ссылку
         String referralLink = referralService.generateReferralLinkWithCode(user);
         
-        // Получаем реферальный код пользователя
-        List<ReferralCode> userCodes = referralService.getUserActiveReferralCodes(user.getId());
-        String referralCodeDisplay;
-        if (!userCodes.isEmpty()) {
-            ReferralCode code = userCodes.get(0);
-            referralCodeDisplay = String.format("🎫 Ваш реферальный код: %s", code.getCode());
-        } else {
-            referralCodeDisplay = "🎫 Реферальный код: не создан";
-        }
+        // Реферальный код - это TG ID пользователя
+        String referralCodeDisplay = String.format("🎫 Ваш реферальный код: %s", user.getTelegramId());
 
         String message = String.format("""
                 🎁 Реферальная программа
@@ -5722,41 +5916,20 @@ public class MessageProcessor {
         }
 
         try {
-            // Проверяем, есть ли у пользователя уже активные реферальные коды
-            List<ReferralCode> existingCodes = referralService.getUserReferralCodes(user.getId());
-            boolean hasActiveCode = existingCodes.stream().anyMatch(code -> code.getIsActive());
-
-            if (hasActiveCode) {
-                String message = "❌ У вас уже есть активный реферальный код.\n\n" +
-                        "Вы можете создать только один реферальный код.";
-                InlineKeyboardMarkup inlineKeyboard = createBackAndMainMenuKeyboard();
-                int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
-                lastMessageId.put(chatId, messageId);
-                return;
-            }
-
-            // FIX: Create a new ReferralCode object first
-            ReferralCode referralCode = new ReferralCode();
-            // Set the description from user input
-            referralCode.setDescription(text);
-            // Set the user
-            referralCode.setUser(user);
-
-            // Generate the referral code using the service
-            ReferralCode createdCode = referralService.createReferralCode(referralCode);
+            // Генерируем реферальную ссылку автоматически (использует TG ID)
+            String referralLink = referralService.generateReferralLinkWithCode(user);
 
             String message = String.format("""
-                        ✅ Реферальный код создан!
+                        ✅ Реферальная ссылка готова!
                         
-                        🔸 Ваш код: %s
-                        📝 Описание: %s
+                        🔗 Ваша ссылка: %s
+                        🎫 Ваш код: %s
                         
-                        Теперь вы можете делиться этим кодом с друзьями. 
-                        За каждую успешную заявку реферала вы будете получать %.2f%% от суммы заявки.
+                        Делитесь этой ссылкой с друзьями! 
+                        Когда они перейдут по ссылке и совершат первую заявку, вы получите бонус.
                         """,
-                    createdCode.getCode(),
-                    text,
-                    createdCode.getRewardPercent());
+                    referralLink,
+                    user.getTelegramId());
 
             InlineKeyboardMarkup inlineKeyboard = createBackAndMainMenuKeyboard();
             int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
@@ -5766,7 +5939,7 @@ public class MessageProcessor {
             userService.update(user);
 
         } catch (Exception e) {
-            String errorMessage = "❌ Ошибка при создании реферального кода: " + e.getMessage();
+            String errorMessage = "❌ Ошибка при создании реферальной ссылки: " + e.getMessage();
             InlineKeyboardMarkup inlineKeyboard = createBackAndMainMenuKeyboard();
             int messageId = bot.sendMessageWithInlineKeyboard(chatId, errorMessage, inlineKeyboard);
             lastMessageId.put(chatId, messageId);
@@ -7237,9 +7410,15 @@ public class MessageProcessor {
 
             for (Long adminId : adminConfig.getAdminUserIds()) {
                 try {
-                    bot.sendMessage(adminId, notification);
+                    int messageId = bot.sendMessage(adminId, notification);
+                    // Если messageId == -1, значит произошла ошибка
+                    if (messageId == -1) {
+                        System.err.println("Не удалось отправить уведомление админу " + adminId + ": ошибка отправки сообщения");
+                    }
                 } catch (Exception e) {
+                    // Игнорируем ошибки отправки уведомлений, чтобы не прерывать работу бота
                     System.err.println("Не удалось отправить уведомление админу " + adminId + ": " + e.getMessage());
+                    // Продолжаем отправку остальным админам
                 }
             }
         } catch (Exception e) {

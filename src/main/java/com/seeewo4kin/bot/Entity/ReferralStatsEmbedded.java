@@ -43,6 +43,10 @@ public class ReferralStatsEmbedded {
     public Integer getLevel1CountSafe() {
         return level1Count != null ? level1Count : 0;
     }
+    public Integer getLevel2CountSafe() {
+        return level2Count != null ? level2Count : 0;
+    }
+
 
     // Метод для безопасного получения totalEarned
     public BigDecimal getTotalEarnedSafe() {
