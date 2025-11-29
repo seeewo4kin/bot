@@ -1,32 +1,67 @@
 package com.seeewo4kin.bot.Entity;
 
 import jakarta.persistence.*;
-import lombok.Data;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "referral_usages")
-@Data
+@Table(name = "referral_usage")
 public class ReferralUsage {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @ManyToOne
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "referral_code_id", nullable = false)
     private ReferralCode referralCode;
 
-    @ManyToOne
-    @JoinColumn(name = "user_id", nullable = false)
-    private User usedBy;
-
-    @Column(name = "used_at", updatable = false)
+    @Column(name = "used_at")
     private LocalDateTime usedAt;
 
-    private Boolean rewardGiven = false;
+    // Конструкторы
+    public ReferralUsage() {
+        this.usedAt = LocalDateTime.now();
+    }
 
-    @PrePersist
-    protected void onCreate() {
-        usedAt = LocalDateTime.now();
+    public ReferralUsage(User user, ReferralCode referralCode) {
+        this();
+        this.user = user;
+        this.referralCode = referralCode;
+    }
+
+    // Геттеры и сеттеры
+    public Long getId() {
+        return id;
+    }
+
+    public void setId(Long id) {
+        this.id = id;
+    }
+
+    public User getUser() {
+        return user;
+    }
+
+    public void setUser(User user) {
+        this.user = user;
+    }
+
+    public ReferralCode getReferralCode() {
+        return referralCode;
+    }
+
+    public void setReferralCode(ReferralCode referralCode) {
+        this.referralCode = referralCode;
+    }
+
+    public LocalDateTime getUsedAt() {
+        return usedAt;
+    }
+
+    public void setUsedAt(LocalDateTime usedAt) {
+        this.usedAt = usedAt;
     }
 }
