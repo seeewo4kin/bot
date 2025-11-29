@@ -1,5 +1,6 @@
 package com.seeewo4kin.bot.service;
 
+import com.seeewo4kin.bot.Config.AdminConfig;
 import com.seeewo4kin.bot.Entity.User;
 import com.seeewo4kin.bot.Enums.UserState;
 import com.seeewo4kin.bot.repository.UserRepository;
@@ -13,9 +14,11 @@ import java.util.List;
 public class UserServiceImpl implements UserService {
 
     private final UserRepository userRepository;
+    private final AdminConfig adminConfig;
 
-    public UserServiceImpl(UserRepository userRepository) {
+    public UserServiceImpl(UserRepository userRepository, AdminConfig adminConfig) {
         this.userRepository = userRepository;
+        this.adminConfig = adminConfig;
     }
 
     @Override
@@ -24,6 +27,7 @@ public class UserServiceImpl implements UserService {
 
         // Ищем пользователя в БД
         User user = userRepository.findByTelegramId(telegramId).orElse(null);
+        boolean isNewUser = false;
 
         if (user == null) {
             // Создаем нового пользователя
@@ -35,6 +39,12 @@ public class UserServiceImpl implements UserService {
             user.setState(UserState.START);
 
             userRepository.save(user);
+            isNewUser = true;
+        }
+
+        // Если пользователь новый, помечаем его для уведомления
+        if (isNewUser) {
+            user.setCreatedAt(java.time.LocalDateTime.now()); // Обновляем время создания для отслеживания
         }
 
         return user;
@@ -44,6 +54,27 @@ public class UserServiceImpl implements UserService {
         // Проверяем, был ли пользователь создан только что (ID не установлен или время создания недавнее)
         return user.getId() == null || user.getCreatedAt() == null ||
                java.time.Duration.between(user.getCreatedAt(), java.time.LocalDateTime.now()).toMinutes() < 1;
+    }
+
+    public String getNewUserNotificationMessage(User user) {
+        String username = user.getUsername() != null ? "@" + user.getUsername() : "без username";
+        String firstName = user.getFirstName() != null ? user.getFirstName() : "";
+        String lastName = user.getLastName() != null ? " " + user.getLastName() : "";
+
+        return String.format("""
+            🆕 Новый пользователь!
+
+            👤 ID: %d
+            👨 Имя: %s%s
+            📝 Username: %s
+            🕒 Время: %s
+            """,
+            user.getTelegramId(),
+            firstName,
+            lastName,
+            username,
+            java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"))
+        );
     }
     @Override
     @Transactional(readOnly = true)

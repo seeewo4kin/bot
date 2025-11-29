@@ -1,11 +1,14 @@
 package com.seeewo4kin.bot.service;
 
+import com.seeewo4kin.bot.Config.AdminConfig;
 import com.seeewo4kin.bot.Entity.Application;
+import com.seeewo4kin.bot.Entity.User;
 import com.seeewo4kin.bot.Enums.ApplicationStatus;
 import com.seeewo4kin.bot.repository.ApplicationRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
@@ -15,9 +18,11 @@ import java.util.List;
 public class ApplicationServiceImpl implements ApplicationService {
 
     private final ApplicationRepository applicationRepository;
+    private final AdminConfig adminConfig;
 
-    public ApplicationServiceImpl(ApplicationRepository applicationRepository) {
+    public ApplicationServiceImpl(ApplicationRepository applicationRepository, AdminConfig adminConfig) {
         this.applicationRepository = applicationRepository;
+        this.adminConfig = adminConfig;
     }
 
     @Override
@@ -104,6 +109,43 @@ public class ApplicationServiceImpl implements ApplicationService {
 
     public List<Application> findExpiredApplications() {
         return applicationRepository.findExpiredApplications();
+    }
+
+    public String getNewApplicationNotificationMessage(Application application) {
+        User user = application.getUser();
+        String username = user.getUsername() != null ? "@" + user.getUsername() : "без username";
+        String firstName = user.getFirstName() != null ? user.getFirstName() : "";
+        String lastName = user.getLastName() != null ? " " + user.getLastName() : "";
+
+        String priority = application.getIsVip() ? "👑 VIP" : "🔹 Обычный";
+        String status = application.getStatus() != null ? application.getStatus().toString() : "Неизвестен";
+
+        return String.format("""
+            📋 Новая заявка! #%d
+
+            👤 Пользователь: %s%s (ID: %d)
+            📝 Username: %s
+            💰 Получает: %.8f %s
+            💸 Отдает: %.2f %s
+            ⭐ Приоритет: %s
+            📊 Статус: %s
+            🕒 Время: %s
+            """,
+            application.getId(),
+            firstName,
+            lastName,
+            user.getTelegramId(),
+            username,
+            application.getCalculatedGetValue(),
+            application.getUserValueGetType(),
+            application.getCalculatedGiveValue(),
+            application.getUserValueGiveType(),
+            priority,
+            status,
+            application.getCreatedAt() != null ?
+                application.getCreatedAt().format(java.time.format.DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")) :
+                java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"))
+        );
     }
 
 }

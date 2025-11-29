@@ -20,7 +20,7 @@ public class ReferralCode {
     private String code;
 
     @ManyToOne
-    @JoinColumn(name = "owner_id", nullable = false)
+    @JoinColumn(name = "user_id", nullable = false)
     private User owner;
 
     private String description;
