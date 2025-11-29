@@ -36,6 +36,7 @@ public class MessageProcessor {
     private final CommissionService commissionService;
     private final ReferralService referralService;
     private final CommissionConfig commissionConfig;
+    private final com.seeewo4kin.bot.repository.UserRepository userRepository;
     private final Map<Long, Integer> adminAllApplicationsPage = new ConcurrentHashMap<>();
     private final Map<Long, Integer> adminActiveApplicationsPage = new ConcurrentHashMap<>();
     private final Map<Long, Integer> adminAllUsersPage = new ConcurrentHashMap<>();
@@ -50,6 +51,7 @@ public class MessageProcessor {
     private final Map<Long, List<Integer>> chatMessageHistory = new ConcurrentHashMap<>();
     private final Map<Long, Integer> firstWelcomeMessageId = new ConcurrentHashMap<>();
     private final Map<Long, Long> selectedApplication = new ConcurrentHashMap<>();
+    private final Map<Long, Long> selectedReferralUser = new ConcurrentHashMap<>();
 
     public MessageProcessor(UserService userService,
                             ApplicationService applicationService,
@@ -59,7 +61,8 @@ public class MessageProcessor {
                             AdminConfig adminConfig,
                             CommissionService commissionService,
                             ReferralService referralService,
-                            CommissionConfig commissionConfig) {
+                            CommissionConfig commissionConfig,
+                            com.seeewo4kin.bot.repository.UserRepository userRepository) {
         this.userService = userService;
         this.applicationService = applicationService;
         this.cryptoPriceService = cryptoPriceService;
@@ -69,6 +72,7 @@ public class MessageProcessor {
         this.commissionService = commissionService;
         this.referralService = referralService;
         this.commissionConfig = commissionConfig;
+        this.userRepository = userRepository;
     }
 
     private String formatRubAmount(BigDecimal amount) {
@@ -774,6 +778,21 @@ public class MessageProcessor {
                     processAdminBonusBalanceManagement(chatId, user, text, bot);
                     break;
 
+                case ADMIN_MANAGE_REFERRAL_BALANCE:
+                    System.out.println("DEBUG: ADMIN_MANAGE_REFERRAL_BALANCE state");
+                    processAdminReferralBalanceManagement(chatId, user, text, bot);
+                    break;
+
+                case ADMIN_REFERRAL_ADD_BALANCE:
+                    System.out.println("DEBUG: ADMIN_REFERRAL_ADD_BALANCE state");
+                    processAdminReferralAddBalance(chatId, user, text, bot);
+                    break;
+
+                case ADMIN_REFERRAL_REMOVE_BALANCE:
+                    System.out.println("DEBUG: ADMIN_REFERRAL_REMOVE_BALANCE state");
+                    processAdminReferralRemoveBalance(chatId, user, text, bot);
+                    break;
+
                 case ADMIN_USERS_MENU:
                     System.out.println("DEBUG: ADMIN_USERS_MENU state");
                     processAdminUsersMenu(chatId, user, text, bot);
@@ -1244,23 +1263,65 @@ public class MessageProcessor {
                 "💳 Реквизиты для выплаты";
 
         StringBuilder message = new StringBuilder();
+        // Определяем изначальную сумму пользователя
+        String originalAmountText = "";
+        if (isBuy) {
+            // Для покупки: пользователь ввел сумму в рублях (userValueGiveValue) или крипте (userValueGetValue)
+            if (application.getUserValueGiveType() == ValueType.RUB) {
+                // Ввод в рублях - показываем как есть
+                originalAmountText = String.format("• Изначальная сумма: %s ₽", formatRubAmount(application.getUserValueGiveValue()));
+            } else {
+                // Ввод в крипте - переводим в рубли
+                BigDecimal cryptoToRubRate = cryptoPriceService.getCurrentPrice(application.getCryptoCurrency().name(), "RUB");
+                if (cryptoToRubRate != null && cryptoToRubRate.compareTo(BigDecimal.ZERO) > 0) {
+                    BigDecimal originalInRub = application.getUserValueGetValue().multiply(cryptoToRubRate);
+                    originalAmountText = String.format("• Хочу купить на сумму: %s ₽ (%s)",
+                            formatRubAmount(originalInRub),
+                            formatCryptoAmount(application.getUserValueGetValue(), application.getCryptoCurrencySafe()));
+                } else {
+                    originalAmountText = String.format("• Изначальная сумма: %s",
+                            formatCryptoAmount(application.getUserValueGetValue(), application.getCryptoCurrencySafe()));
+                }
+            }
+        } else {
+            // Для продажи: пользователь ввел сумму в крипте (userValueGiveValue) или рублях (userValueGetValue)
+            if (application.getUserValueGiveType() == ValueType.RUB) {
+                // Ввод в рублях - показываем как есть
+                originalAmountText = String.format("• Изначальная сумма: %s ₽", formatRubAmount(application.getUserValueGiveValue()));
+            } else {
+                // Ввод в крипте - переводим в рубли
+                BigDecimal cryptoToRubRate = cryptoPriceService.getCurrentPrice(application.getCryptoCurrency().name(), "RUB");
+                if (cryptoToRubRate != null && cryptoToRubRate.compareTo(BigDecimal.ZERO) > 0) {
+                    BigDecimal originalInRub = application.getUserValueGiveValue().multiply(cryptoToRubRate);
+                    originalAmountText = String.format("• Хочу продать на сумму: %s ₽ (%s)",
+                            formatRubAmount(originalInRub),
+                            formatCryptoAmount(application.getUserValueGiveValue(), application.getCryptoCurrencySafe()));
+                } else {
+                    originalAmountText = String.format("• Изначальная сумма: %s",
+                            formatCryptoAmount(application.getUserValueGiveValue(), application.getCryptoCurrencySafe()));
+                }
+            }
+        }
+
         message.append(String.format("""
         ✅ Заявка на %s %s создана!
-        
+
         📝 ID: %s
 
         ━━━━━━━━━━━━━━━━━━━━━━━
         💰 Детали заявки
         ━━━━━━━━━━━━━━━━━━━━━━━
-        
+
+        %s
         • Получаете: %s
-        • Отдаете: %s
+        • Отдаете: %s (с комиссией)
         • %s: %s
         • Приоритет: %s
         """,
                 operationType,
                 cryptoName,
                 application.getId(), // Используем ID вместо UUID
+                originalAmountText,
                 isBuy ?
                         formatCryptoAmount(application.getCalculatedGetValue(), application.getCryptoCurrencySafe()) :
                         formatRubAmount(application.getCalculatedGetValue()),
@@ -1837,12 +1898,11 @@ public class MessageProcessor {
 
             System.out.println("DEBUG: After processing - user bonus balance: " + user.getBonusBalance() + ", used code: '" + user.getUsedReferralCode() + "'");
 
-            // Отправляем сообщение о начислении бонуса
-            String bonusMessage = "🎉 Поздравляем!\n\n" +
-                    "✅ Вам начислено 100 бонусных рублей на баланс за использование реферального кода!\n\n" +
-                    "💰 Ваш бонусный баланс: " + formatRubAmount(user.getBonusBalance()) + " ₽\n\n" +
+            // Отправляем сообщение о успешном использовании реферального кода
+            String successMessage = "🎉 Поздравляем!\n\n" +
+                    "✅ Реферальный код успешно активирован!\n\n" +
                     "Теперь вы стали рефералом пользователя @" + (inviter.getUsername() != null ? inviter.getUsername() : "ID" + inviter.getId());
-            bot.sendMessage(chatId, bonusMessage);
+            bot.sendMessage(chatId, successMessage);
 
             System.out.println("DEBUG: Successfully processed referral code command");
         } catch (Exception e) {
@@ -2314,6 +2374,15 @@ public class MessageProcessor {
         int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
         lastMessageId.put(chatId, messageId);
     }
+
+    private void showAdminReferralBalanceSearch(Long chatId, MyBot bot) {
+        String message = "👥 Управление реферальными балансами\n\n" +
+                "Введите username (без @) или ID пользователя:";
+
+        InlineKeyboardMarkup inlineKeyboard = createBackToAdminKeyboard();
+        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
+        lastMessageId.put(chatId, messageId);
+    }
     private void processBonusBalanceOperation(Long chatId, User admin, String callbackData, MyBot bot, String callbackQueryId) {
         try {
             String[] parts = callbackData.split("_");
@@ -2357,21 +2426,391 @@ public class MessageProcessor {
             bot.answerCallbackQuery(callbackQueryId, "❌ Ошибка при операции с балансом");
         }
     }
-    private void showEnterAmountRubMenu(Long chatId, User user, CryptoCurrency crypto, MyBot bot) {
-        // Получаем текущую цену для справки
-        BigDecimal currentPrice = cryptoPriceService.getCurrentPrice(crypto.name(), "RUB");
 
+    private void processReferralOperation(Long chatId, User admin, String callbackData, MyBot bot, String callbackQueryId) {
+        try {
+            String[] parts = callbackData.split("_");
+            String operation = parts[2];
+
+            if (operation.equals("add") || operation.equals("remove") || operation.equals("reset")) {
+                // Обработка старых операций с фиксированными суммами
+                BigDecimal amount = BigDecimal.ZERO;
+                Long targetUserId = Long.parseLong(parts[4]);
+
+                User targetUser = userService.find(targetUserId);
+                if (targetUser == null) {
+                    bot.answerCallbackQuery(callbackQueryId, "❌ Пользователь не найден");
+                    return;
+                }
+
+                // Инициализируем реферальную статистику если нужно
+                if (targetUser.getReferralStats() == null) {
+                    targetUser.setReferralStats(new ReferralStatsEmbedded());
+                }
+
+                switch (operation) {
+                    case "add":
+                        amount = new BigDecimal(parts[3]);
+                        targetUser.getReferralStats().setReferralBalance(
+                            targetUser.getReferralStats().getReferralBalance().add(amount)
+                        );
+                        break;
+                    case "remove":
+                        amount = new BigDecimal(parts[3]);
+                        BigDecimal newBalance = targetUser.getReferralStats().getReferralBalance().subtract(amount);
+                        // Не позволяем балансу уйти в отрицательное значение
+                        targetUser.getReferralStats().setReferralBalance(
+                            newBalance.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : newBalance
+                        );
+                        break;
+                    case "reset":
+                        targetUser.getReferralStats().setReferralBalance(BigDecimal.ZERO);
+                        break;
+                }
+
+                userService.update(targetUser);
+
+                String message = String.format("✅ Реферальный баланс %s на %s\nНовый баланс: %s",
+                        operation.equals("reset") ? "обнулен" : (operation.equals("add") ? "пополнен" : "списан"),
+                        formatRubAmount(amount),
+                        formatRubAmount(targetUser.getReferralStats().getReferralBalance()));
+
+                bot.answerCallbackQuery(callbackQueryId, message);
+                showUserReferralManagement(chatId, targetUser, bot);
+            } else if (operation.equals("view")) {
+                // Просмотр рефералов
+                String level = parts[3]; // "l1" или "l2"
+                Long targetUserId = Long.parseLong(parts[4]);
+                showUserReferrals(chatId, admin, targetUserId, level, bot);
+            } else if (operation.equals("apps")) {
+                // Просмотр заявок рефералов
+                String level = parts[3]; // "l1" или "l2"
+                Long targetUserId = Long.parseLong(parts[4]);
+                showUserReferralApplications(chatId, admin, targetUserId, level, bot);
+            } else if (operation.equals("balance")) {
+                // Управление балансом
+                String action = parts[3]; // "add" или "remove"
+                Long targetUserId = Long.parseLong(parts[4]);
+
+                if (action.equals("add")) {
+                    admin.setState(UserState.ADMIN_REFERRAL_ADD_BALANCE);
+                    userService.update(admin);
+                    selectedReferralUser.put(admin.getId(), targetUserId);
+
+                    String message = "💰 Введите сумму для пополнения реферального баланса пользователя:";
+                    InlineKeyboardMarkup keyboard = createBackToUserReferralManagementKeyboard(targetUserId);
+                    int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, keyboard);
+                    lastMessageId.put(chatId, messageId);
+                } else if (action.equals("remove")) {
+                    admin.setState(UserState.ADMIN_REFERRAL_REMOVE_BALANCE);
+                    userService.update(admin);
+                    selectedReferralUser.put(admin.getId(), targetUserId);
+
+                    String message = "💸 Введите сумму для списания с реферального баланса пользователя:";
+                    InlineKeyboardMarkup keyboard = createBackToUserReferralManagementKeyboard(targetUserId);
+                    int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, keyboard);
+                    lastMessageId.put(chatId, messageId);
+                }
+            } else if (operation.equals("manage") && parts.length >= 4 && "user".equals(parts[2])) {
+                // Возврат к управлению рефералами пользователя
+                Long targetUserId = Long.parseLong(parts[3]);
+                User targetUser = userService.find(targetUserId);
+                if (targetUser != null) {
+                    admin.setState(UserState.ADMIN_MANAGE_REFERRAL_BALANCE);
+                    userService.update(admin);
+                    showUserReferralManagement(chatId, targetUser, bot);
+                } else {
+                    bot.answerCallbackQuery(callbackQueryId, "❌ Пользователь не найден");
+                }
+            }
+
+        } catch (Exception e) {
+            bot.answerCallbackQuery(callbackQueryId, "❌ Ошибка при операции с рефералами");
+        }
+    }
+
+    private void showUserReferrals(Long chatId, User admin, Long targetUserId, String level, MyBot bot) {
+        User targetUser = userService.find(targetUserId);
+        if (targetUser == null) {
+            bot.sendMessage(chatId, "❌ Пользователь не найден");
+            return;
+        }
+
+        List<User> referrals;
+        String levelText;
+
+        if ("l1".equals(level)) {
+            referrals = userRepository.findByInvitedBy(targetUser);
+            levelText = "1-го уровня";
+        } else {
+            // Получаем рефералов 2-го уровня
+            List<User> level1Referrals = userRepository.findByInvitedBy(targetUser);
+            referrals = new ArrayList<>();
+            for (User level1User : level1Referrals) {
+                referrals.addAll(userRepository.findByInvitedBy(level1User));
+            }
+            levelText = "2-го уровня";
+        }
+
+        if (referrals.isEmpty()) {
+            String message = String.format("👥 Рефералы %s пользователя %s:\n\n❌ Рефералов %s не найдено",
+                    levelText,
+                    targetUser.getUsername() != null ? "@" + targetUser.getUsername() : "ID" + targetUser.getId(),
+                    levelText);
+            InlineKeyboardMarkup keyboard = createBackToUserReferralManagementKeyboard(targetUserId);
+            bot.sendMessageWithInlineKeyboard(chatId, message, keyboard);
+            return;
+        }
+
+        StringBuilder message = new StringBuilder();
+        message.append(String.format("👥 Рефералы %s пользователя %s:\n\n",
+                levelText,
+                targetUser.getUsername() != null ? "@" + targetUser.getUsername() : "ID" + targetUser.getId()));
+
+        for (int i = 0; i < Math.min(referrals.size(), 20); i++) { // Ограничим до 20 для читаемости
+            User referral = referrals.get(i);
+            message.append(String.format("%d. %s (ID: %d) - %s\n",
+                    i + 1,
+                    referral.getUsername() != null ? "@" + referral.getUsername() : "Без username",
+                    referral.getId(),
+                    referral.getCreatedAt().format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))));
+        }
+
+        if (referrals.size() > 20) {
+            message.append(String.format("\n... и еще %d рефералов", referrals.size() - 20));
+        }
+
+        InlineKeyboardMarkup keyboard = createBackToUserReferralManagementKeyboard(targetUserId);
+        bot.sendMessageWithInlineKeyboard(chatId, message.toString(), keyboard);
+    }
+
+    private void showUserReferralApplications(Long chatId, User admin, Long targetUserId, String level, MyBot bot) {
+        User targetUser = userService.find(targetUserId);
+        if (targetUser == null) {
+            bot.sendMessage(chatId, "❌ Пользователь не найден");
+            return;
+        }
+
+        List<User> referrals;
+        String levelText;
+
+        if ("l1".equals(level)) {
+            referrals = userRepository.findByInvitedBy(targetUser);
+            levelText = "1-го уровня";
+        } else {
+            // Получаем рефералов 2-го уровня
+            List<User> level1Referrals = userRepository.findByInvitedBy(targetUser);
+            referrals = new ArrayList<>();
+            for (User level1User : level1Referrals) {
+                referrals.addAll(userRepository.findByInvitedBy(level1User));
+            }
+            levelText = "2-го уровня";
+        }
+
+        if (referrals.isEmpty()) {
+            String message = String.format("📋 Заявки рефералов %s пользователя %s:\n\n❌ Рефералов %s не найдено",
+                    levelText,
+                    targetUser.getUsername() != null ? "@" + targetUser.getUsername() : "ID" + targetUser.getId(),
+                    levelText);
+            InlineKeyboardMarkup keyboard = createBackToUserReferralManagementKeyboard(targetUserId);
+            bot.sendMessageWithInlineKeyboard(chatId, message, keyboard);
+            return;
+        }
+
+        // Получаем все заявки рефералов
+        List<Application> applications = new ArrayList<>();
+        for (User referral : referrals) {
+            applications.addAll(applicationService.findByUser(referral.getId()));
+        }
+
+        applications.sort((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt())); // Сортируем по дате (новые сверху)
+
+        if (applications.isEmpty()) {
+            String message = String.format("📋 Заявки рефералов %s пользователя %s:\n\n❌ Заявок не найдено",
+                    levelText,
+                    targetUser.getUsername() != null ? "@" + targetUser.getUsername() : "ID" + targetUser.getId());
+            InlineKeyboardMarkup keyboard = createBackToUserReferralManagementKeyboard(targetUserId);
+            bot.sendMessageWithInlineKeyboard(chatId, message, keyboard);
+            return;
+        }
+
+        StringBuilder message = new StringBuilder();
+        message.append(String.format("📋 Заявки рефералов %s пользователя %s:\n\n",
+                levelText,
+                targetUser.getUsername() != null ? "@" + targetUser.getUsername() : "ID" + targetUser.getId()));
+
+        for (int i = 0; i < Math.min(applications.size(), 15); i++) { // Ограничим до 15 для читаемости
+            Application app = applications.get(i);
+            String status = app.getStatus().getDisplayName();
+            String type = app.getUserValueGetType() == ValueType.BTC || app.getUserValueGetType() == ValueType.LTC || app.getUserValueGetType() == ValueType.XMR ?
+                    "Покупка" : "Продажа";
+            message.append(String.format("📝 #%d - %s %s - %s (%s)\n",
+                    app.getId(),
+                    type,
+                    app.getCryptoCurrencySafe().getDisplayName(),
+                    status,
+                    app.getCreatedAt().format(DateTimeFormatter.ofPattern("dd.MM HH:mm"))));
+        }
+
+        if (applications.size() > 15) {
+            message.append(String.format("\n... и еще %d заявок", applications.size() - 15));
+        }
+
+        InlineKeyboardMarkup keyboard = createBackToUserReferralManagementKeyboard(targetUserId);
+        bot.sendMessageWithInlineKeyboard(chatId, message.toString(), keyboard);
+    }
+
+    private InlineKeyboardMarkup createBackToUserReferralManagementKeyboard(Long userId) {
+        InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+
+        List<InlineKeyboardButton> row1 = new ArrayList<>();
+        InlineKeyboardButton backButton = new InlineKeyboardButton();
+        backButton.setText("🔙 К управлению рефералами");
+        backButton.setCallbackData("inline_referral_manage_user_" + userId);
+        row1.add(backButton);
+
+        rows.add(row1);
+        markup.setKeyboard(rows);
+        return markup;
+    }
+
+    private void processAdminReferralAddBalance(Long chatId, User admin, String text, MyBot bot) {
+        Long targetUserId = selectedReferralUser.get(admin.getId());
+        if (targetUserId == null) {
+            processAdminReferralBalanceManagement(chatId, admin, text, bot);
+            return;
+        }
+
+        if (text.equals("🔙 Назад")) {
+            User targetUser = userService.find(targetUserId);
+            if (targetUser != null) {
+                showUserReferralManagement(chatId, targetUser, bot);
+            } else {
+                processAdminReferralBalanceManagement(chatId, admin, text, bot);
+            }
+            admin.setState(UserState.ADMIN_MANAGE_REFERRAL_BALANCE);
+            userService.update(admin);
+            return;
+        }
+
+        try {
+            BigDecimal amount = toBigDecimal(text);
+            if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+                String message = "❌ Сумма должна быть больше 0";
+                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message,
+                        createBackToUserReferralManagementKeyboard(targetUserId)));
+                return;
+            }
+
+            User targetUser = userService.find(targetUserId);
+            if (targetUser == null) {
+                processAdminReferralBalanceManagement(chatId, admin, text, bot);
+                return;
+            }
+
+            // Инициализируем реферальную статистику если нужно
+            if (targetUser.getReferralStats() == null) {
+                targetUser.setReferralStats(new ReferralStatsEmbedded());
+            }
+
+            targetUser.getReferralStats().setReferralBalance(
+                targetUser.getReferralStats().getReferralBalance().add(amount)
+            );
+            userService.update(targetUser);
+
+            String message = String.format("✅ Реферальный баланс пополнен на %s\nНовый баланс: %s",
+                    formatRubAmount(amount),
+                    formatRubAmount(targetUser.getReferralStats().getReferralBalance()));
+
+            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message,
+                    createBackToUserReferralManagementKeyboard(targetUserId)));
+
+            admin.setState(UserState.ADMIN_MANAGE_REFERRAL_BALANCE);
+            userService.update(admin);
+
+        } catch (NumberFormatException e) {
+            String message = "❌ Пожалуйста, введите корректное число";
+            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message,
+                    createBackToUserReferralManagementKeyboard(targetUserId)));
+        }
+    }
+
+    private void processAdminReferralRemoveBalance(Long chatId, User admin, String text, MyBot bot) {
+        Long targetUserId = selectedReferralUser.get(admin.getId());
+        if (targetUserId == null) {
+            processAdminReferralBalanceManagement(chatId, admin, text, bot);
+            return;
+        }
+
+        if (text.equals("🔙 Назад")) {
+            User targetUser = userService.find(targetUserId);
+            if (targetUser != null) {
+                showUserReferralManagement(chatId, targetUser, bot);
+            } else {
+                processAdminReferralBalanceManagement(chatId, admin, text, bot);
+            }
+            admin.setState(UserState.ADMIN_MANAGE_REFERRAL_BALANCE);
+            userService.update(admin);
+            return;
+        }
+
+        try {
+            BigDecimal amount = toBigDecimal(text);
+            if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+                String message = "❌ Сумма должна быть больше 0";
+                lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message,
+                        createBackToUserReferralManagementKeyboard(targetUserId)));
+                return;
+            }
+
+            User targetUser = userService.find(targetUserId);
+            if (targetUser == null) {
+                processAdminReferralBalanceManagement(chatId, admin, text, bot);
+                return;
+            }
+
+            // Инициализируем реферальную статистику если нужно
+            if (targetUser.getReferralStats() == null) {
+                targetUser.setReferralStats(new ReferralStatsEmbedded());
+            }
+
+            BigDecimal currentBalance = targetUser.getReferralStats().getReferralBalance();
+            BigDecimal newBalance = currentBalance.subtract(amount);
+            // Не позволяем балансу уйти в отрицательное значение
+            newBalance = newBalance.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : newBalance;
+
+            targetUser.getReferralStats().setReferralBalance(newBalance);
+            userService.update(targetUser);
+
+            String message = String.format("✅ С реферального баланса списано %s\nНовый баланс: %s",
+                    formatRubAmount(amount),
+                    formatRubAmount(newBalance));
+
+            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message,
+                    createBackToUserReferralManagementKeyboard(targetUserId)));
+
+            admin.setState(UserState.ADMIN_MANAGE_REFERRAL_BALANCE);
+            userService.update(admin);
+
+        } catch (NumberFormatException e) {
+            String message = "❌ Пожалуйста, введите корректное число";
+            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message,
+                    createBackToUserReferralManagementKeyboard(targetUserId)));
+        }
+    }
+    private void showEnterAmountRubMenu(Long chatId, User user, CryptoCurrency crypto, MyBot bot) {
         String message = String.format("""
         💎 Введите сумму в RUB для покупки %s:
-        
+
         💸 Минимальная сумма: 1000 RUB
+
+        📝 Введите сумму в чате или нажмите кнопку ниже:
         """,
-                crypto.getDisplayName(),
-                crypto.getSymbol(),
-                formatRubAmount(currentPrice)
+                crypto.getDisplayName()
         );
 
-        InlineKeyboardMarkup inlineKeyboard = createEnterAmountInlineKeyboard();
+        InlineKeyboardMarkup inlineKeyboard = createBackAndMainMenuKeyboard();
         int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
         lastMessageId.put(chatId, messageId);
     }
@@ -2414,6 +2853,16 @@ public class MessageProcessor {
                 processBonusBalanceOperation(chatId, user, callbackData, bot, callbackQueryId);
                 return;
             }
+
+            // ========== ОБРАБОТКА РЕФЕРАЛЬНЫХ ОПЕРАЦИЙ АДМИНА ==========
+            if (callbackData.startsWith("inline_referral_add_") || callbackData.startsWith("inline_referral_remove_") ||
+                    callbackData.startsWith("inline_referral_reset_") || callbackData.startsWith("inline_referral_view_") ||
+                    callbackData.startsWith("inline_referral_apps_")) {
+                System.out.println("DEBUG: Processing admin referral operation");
+                processReferralOperation(chatId, user, callbackData, bot, callbackQueryId);
+                return;
+            }
+
 
             // ========== ОБРАБОТКА ИСПОЛЬЗОВАНИЯ БОНУСОВ В ЗАЯВКЕ ==========
             if (callbackData.startsWith("inline_bonus_use_")) {
@@ -2469,10 +2918,13 @@ public class MessageProcessor {
                             user.getTelegramId()
                     );
 
-                    try {
-                        bot.sendMessage(8161846961L, spamMessage);
-                    } catch (Exception e) {
-                        System.out.println("DEBUG: Failed to send spam message to admin");
+                    // Отправляем уведомление всем админам
+                    for (Long adminId : adminConfig.getAdminUserIds()) {
+                        try {
+                            bot.sendMessage(adminId, spamMessage);
+                        } catch (Exception e) {
+                            System.err.println("Не удалось отправить уведомление о спам-блоке админу " + adminId + ": " + e.getMessage());
+                        }
                     }
 
                     if (callbackQueryId != null) {
@@ -2782,6 +3234,23 @@ public class MessageProcessor {
                     showAdminBonusBalanceSearch(chatId, bot);
                     break;
 
+                case "inline_admin_referral_manage":
+                    System.out.println("DEBUG: inline_admin_referral_manage - switching to ADMIN_MANAGE_REFERRAL_BALANCE");
+                    user.setState(UserState.ADMIN_MANAGE_REFERRAL_BALANCE);
+                    userService.update(user);
+                    showAdminReferralBalanceSearch(chatId, bot);
+                    break;
+
+                case "inline_admin_monthly_bonuses":
+                    System.out.println("DEBUG: inline_admin_monthly_bonuses");
+                    if (adminConfig.isAdmin(user.getId())) {
+                        referralService.calculateMonthlyBonuses();
+                        bot.sendMessage(chatId, "✅ Ежемесячные бонусы рассчитаны и начислены!");
+                    } else {
+                        bot.sendMessage(chatId, "❌ Доступ запрещен");
+                    }
+                    break;
+
                 // === ПОЛЬЗОВАТЕЛЬСКИЕ ФУНКЦИИ ===
                 case "inline_my_applications":
                     System.out.println("DEBUG: inline_my_applications - switching to VIEWING_APPLICATIONS");
@@ -2950,8 +3419,14 @@ public class MessageProcessor {
                 case "max":
                     Application appMax = temporaryApplications.get(user.getId());
                     if (appMax != null) {
-                        BigDecimal maxBonus = user.getBonusBalance().min(appMax.getCalculatedGiveValue());
-                        amountText = maxBonus.toString();
+                        BigDecimal availableForBonus = appMax.getCalculatedGiveValue();
+                        // Если бонусы уже применялись, не позволяем применить еще
+                        if (appMax.getUsedBonusBalance() != null && appMax.getUsedBonusBalance().compareTo(BigDecimal.ZERO) > 0) {
+                            amountText = "0";
+                        } else {
+                            BigDecimal maxBonus = user.getBonusBalance().min(availableForBonus);
+                            amountText = maxBonus.toString();
+                        }
                     } else {
                         amountText = "0";
                     }
@@ -3058,6 +3533,18 @@ public class MessageProcessor {
 
         try {
             BigDecimal bonusAmount = toBigDecimal(text);
+
+            // Проверяем, не были ли уже применены бонусы
+            if (application.getUsedBonusBalance() != null && application.getUsedBonusBalance().compareTo(BigDecimal.ZERO) > 0) {
+                String errorMsg = "❌ Бонусный баланс уже применен к этой заявке";
+                if (callbackQueryId != null) {
+                    bot.answerCallbackQuery(callbackQueryId, errorMsg);
+                } else {
+                    lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, errorMsg,
+                            createBonusUsageKeyboard(user.getBonusBalance())));
+                }
+                return;
+            }
 
             if (bonusAmount.compareTo(BigDecimal.ZERO) < 0) {
                 String errorMsg = "❌ Сумма не может быть отрицательной";
@@ -3338,6 +3825,8 @@ public class MessageProcessor {
         
         🌟 Стань частью семьи 💰 Зарабатывай на каждом обмене своих друзей и строй собственную сеть рефералов.
 
+        ❗️Бонус каждому твоему рефералу при введении твоего реф кода 100 на бонусный баланс❗️
+
         ━━━━━━━━━━━━━━━━━━━━━━━━━━━
         ⚙️ УРОВНИ СИСТЕМЫ
         ━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -3352,8 +3841,6 @@ public class MessageProcessor {
         🔹 Ты получаешь: +250₽ на реферальный баланс, когда реферал достигнет:
            • 10 000₽ объёма ИЛИ
            • 5 обменов
-
-        🔹 Твой реферал получает: +100 кешбэк-рублей после первого обмена на сумму от 2000₽
 
         ━━━━━━━━━━━━━━━━━━━━━━━━━━━
         📅 БОНУСЫ ЗА КОЛИЧЕСТВО ОБМЕНОВ В МЕСЯЦ
@@ -3575,17 +4062,26 @@ public class MessageProcessor {
     }
 
     private void showBonusBalanceUsage(Long chatId, User user, Application application, MyBot bot) {
+        // Проверяем, были ли уже применены бонусы
+        if (application.getUsedBonusBalance() != null && application.getUsedBonusBalance().compareTo(BigDecimal.ZERO) > 0) {
+            // Бонусы уже применены, переходим к применению купона
+            showCouponApplication(chatId, user, application, bot);
+            user.setState(UserState.APPLYING_COUPON_FINAL);
+            userService.update(user);
+            return;
+        }
+
         BigDecimal availableBonus = user.getBonusBalance();
         BigDecimal maxUsable = availableBonus.min(application.getCalculatedGiveValue());
 
         String message = String.format("""
         💰 Ваш бонусный баланс: %s
-        
+
         Вы можете списать до %s для уменьшения суммы заявки.
-        
+
         Введите сумму бонусного баланса для списания:
         (или 0, если не хотите использовать)
-        
+
         💡 Доступные варианты:
         • Введите число (например: 100)
         • Нажмите кнопку "Максимум" для списания %s
@@ -5828,7 +6324,6 @@ public class MessageProcessor {
 
                 🗣️ Сообщите свой код друзьям
                 💬 Они введут команду: /ref %s
-                🎉 Каждый новый реферал принесёт вам 100₽
 
                 ━━━━━━━━━━━━━━━
                 📞 Контакты
@@ -5963,8 +6458,16 @@ public class MessageProcessor {
         spamButton.setCallbackData("inline_spam_block_help");
         row2.add(spamButton);
 
+        // Третья строка: главное меню
+        List<InlineKeyboardButton> row3 = new ArrayList<>();
+        InlineKeyboardButton mainMenuButton = new InlineKeyboardButton();
+        mainMenuButton.setText("💎 Главное меню");
+        mainMenuButton.setCallbackData("inline_main_menu");
+        row3.add(mainMenuButton);
+
         rows.add(row1);
         rows.add(row2);
+        rows.add(row3);
 
         markup.setKeyboard(rows);
         return markup;
@@ -6238,19 +6741,29 @@ public class MessageProcessor {
         commissionButton.setCallbackData("inline_admin_commission");
         row4.add(commissionButton);
 
-        // Пятый ряд - бонусные балансы
+        // Пятый ряд - бонусные и реферальные балансы
         List<InlineKeyboardButton> row5 = new ArrayList<>();
         InlineKeyboardButton bonusButton = new InlineKeyboardButton();
         bonusButton.setText("💳 Бонусные балансы");
         bonusButton.setCallbackData("inline_admin_bonus_manage");
         row5.add(bonusButton);
 
-        // Шестой ряд - рассылка
+        InlineKeyboardButton referralButton = new InlineKeyboardButton();
+        referralButton.setText("👥 Реферальные балансы");
+        referralButton.setCallbackData("inline_admin_referral_manage");
+        row5.add(referralButton);
+
+        // Шестой ряд - рассылка и рефералы
         List<InlineKeyboardButton> row6 = new ArrayList<>();
         InlineKeyboardButton broadcastButton = new InlineKeyboardButton();
         broadcastButton.setText("📢 Рассылка");
         broadcastButton.setCallbackData("inline_admin_broadcast");
         row6.add(broadcastButton);
+
+        InlineKeyboardButton monthlyBonusButton = new InlineKeyboardButton();
+        monthlyBonusButton.setText("🎁 Мес. бонусы");
+        monthlyBonusButton.setCallbackData("inline_admin_monthly_bonuses");
+        row6.add(monthlyBonusButton);
 
         // Седьмой ряд - навигация
         List<InlineKeyboardButton> row7 = new ArrayList<>();
@@ -6703,6 +7216,18 @@ public class MessageProcessor {
         processAdminUserSearchForBonus(chatId, user, text, bot);
     }
 
+    private void processAdminReferralBalanceManagement(Long chatId, User user, String text, MyBot bot) {
+        if (text.equals("🔙 Назад")) {
+            user.setState(UserState.ADMIN_MAIN_MENU);
+            userService.update(user);
+            showAdminMainMenu(chatId, bot);
+            return;
+        }
+
+        // Обработка ввода username для поиска пользователя
+        processAdminUserSearchForReferral(chatId, user, text, bot);
+    }
+
     private void processAdminUserSearchForBonus(Long chatId, User admin, String searchQuery, MyBot bot) {
         User foundUser = null;
 
@@ -6743,15 +7268,55 @@ public class MessageProcessor {
         showUserBonusManagement(chatId, foundUser, bot);
     }
 
+    private void processAdminUserSearchForReferral(Long chatId, User admin, String searchQuery, MyBot bot) {
+        User foundUser = null;
+
+        // Пробуем найти по username
+        if (!searchQuery.startsWith("@")) {
+            foundUser = userService.findByUsername(searchQuery);
+        } else {
+            foundUser = userService.findByUsername(searchQuery.substring(1));
+        }
+
+        // Пробуем найти по ID
+        if (foundUser == null) {
+            try {
+                Long userId = Long.parseLong(searchQuery);
+                foundUser = userService.find(userId);
+            } catch (NumberFormatException e) {
+                // Не число
+            }
+        }
+
+        // Пробуем найти по Telegram ID
+        if (foundUser == null) {
+            try {
+                Long telegramId = Long.parseLong(searchQuery);
+                foundUser = userService.findByTelegramId(telegramId);
+            } catch (NumberFormatException e) {
+                // Не число
+            }
+        }
+
+        if (foundUser == null) {
+            String message = "❌ Пользователь не найден.\n\n" +
+                    "Введите username (без @) или ID пользователя:";
+            lastMessageId.put(chatId, bot.sendMessageWithKeyboard(chatId, message, createBackToAdminKeyboard()));
+            return;
+        }
+
+        showUserReferralManagement(chatId, foundUser, bot);
+    }
+
     private void showUserBonusManagement(Long chatId, User targetUser, MyBot bot) {
         String message = String.format("""
             💰 Управление бонусным балансом
-                        
+
             👤 Пользователь: %s %s
             📱 Username: @%s
             🆔 ID: %d
             💳 Текущий бонусный баланс: %.2f ₽
-                        
+
             Выберите действие:
             """,
                 targetUser.getFirstName(),
@@ -6762,6 +7327,44 @@ public class MessageProcessor {
         );
 
         InlineKeyboardMarkup inlineKeyboard = createUserBonusManagementKeyboard(targetUser.getId());
+        int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
+        lastMessageId.put(chatId, messageId);
+    }
+
+    private void showUserReferralManagement(Long chatId, User targetUser, MyBot bot) {
+        // Инициализируем реферальную статистику если нужно
+        if (targetUser.getReferralStats() == null) {
+            targetUser.setReferralStats(new ReferralStatsEmbedded());
+        }
+
+        String message = String.format("""
+            👥 Управление рефералами пользователя
+
+            👤 Пользователь: %s %s
+            📱 Username: @%s
+            🆔 ID: %d
+
+            📊 Реферальная статистика:
+            • 1-го уровня: %d рефералов (объем: %.2f ₽)
+            • 2-го уровня: %d рефералов (объем: %.2f ₽)
+            • Всего заработано: %.2f ₽
+            • Текущий реферальный баланс: %.2f ₽
+
+            Выберите действие:
+            """,
+                targetUser.getFirstName(),
+                targetUser.getLastName() != null ? targetUser.getLastName() : "",
+                targetUser.getUsername() != null ? targetUser.getUsername() : "нет",
+                targetUser.getId(),
+                targetUser.getReferralStats().getLevel1CountSafe(),
+                targetUser.getReferralStats().getLevel1VolumeSafe(),
+                targetUser.getReferralStats().getLevel2CountSafe(),
+                targetUser.getReferralStats().getLevel2VolumeSafe(),
+                targetUser.getReferralStats().getTotalEarnedSafe(),
+                targetUser.getReferralStats().getReferralBalance()
+        );
+
+        InlineKeyboardMarkup inlineKeyboard = createUserReferralManagementKeyboard(targetUser.getId());
         int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
         lastMessageId.put(chatId, messageId);
     }
@@ -6783,6 +7386,38 @@ public class MessageProcessor {
         row3.add(createInlineButton("➖ 500 ₽", "inline_bonus_remove_500_" + userId));
         row3.add(createInlineButton("🔄 Обнулить", "inline_bonus_reset_" + userId));
 
+        List<InlineKeyboardButton> row4 = new ArrayList<>();
+        row4.add(createInlineButton("🔙 Назад", "inline_admin_back"));
+
+        rows.add(row1);
+        rows.add(row2);
+        rows.add(row3);
+        rows.add(row4);
+
+        markup.setKeyboard(rows);
+        return markup;
+    }
+
+    private InlineKeyboardMarkup createUserReferralManagementKeyboard(Long userId) {
+        InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+
+        // Первая строка: Просмотр информации
+        List<InlineKeyboardButton> row1 = new ArrayList<>();
+        row1.add(createInlineButton("👥 Рефералы 1 ур.", "inline_referral_view_l1_" + userId));
+        row1.add(createInlineButton("👥 Рефералы 2 ур.", "inline_referral_view_l2_" + userId));
+
+        // Вторая строка: Заявки рефералов
+        List<InlineKeyboardButton> row2 = new ArrayList<>();
+        row2.add(createInlineButton("📋 Заявки 1 ур.", "inline_referral_apps_l1_" + userId));
+        row2.add(createInlineButton("📋 Заявки 2 ур.", "inline_referral_apps_l2_" + userId));
+
+        // Третья строка: Управление балансом
+        List<InlineKeyboardButton> row3 = new ArrayList<>();
+        row3.add(createInlineButton("💰 Добавить баланс", "inline_referral_add_balance_" + userId));
+        row3.add(createInlineButton("💸 Списать баланс", "inline_referral_remove_balance_" + userId));
+
+        // Четвертая строка: Назад
         List<InlineKeyboardButton> row4 = new ArrayList<>();
         row4.add(createInlineButton("🔙 Назад", "inline_admin_back"));
 
@@ -7365,5 +8000,6 @@ public class MessageProcessor {
             System.err.println("Ошибка при отправке уведомления о новом пользователе: " + e.getMessage());
         }
     }
+
 
 }

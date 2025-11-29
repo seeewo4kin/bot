@@ -23,6 +23,24 @@ public class ReferralStatsEmbedded {
     @Column(name = "referral_stats_balance", precision = 19, scale = 8)
     private BigDecimal referralBalance = BigDecimal.ZERO;
 
+    // Отдельные объемы по уровням
+    @Column(name = "level1_volume", precision = 19, scale = 8)
+    private BigDecimal level1Volume = BigDecimal.ZERO;
+
+    @Column(name = "level2_volume", precision = 19, scale = 8)
+    private BigDecimal level2Volume = BigDecimal.ZERO;
+
+    // Повышенные проценты за достижения
+    @Column(name = "level1_bonus_percent", precision = 5, scale = 2)
+    private BigDecimal level1BonusPercent = BigDecimal.ZERO;
+
+    @Column(name = "level2_bonus_percent", precision = 5, scale = 2)
+    private BigDecimal level2BonusPercent = BigDecimal.ZERO;
+
+    // Флаги полученных бонусов (битовая маска)
+    @Column(name = "received_bonuses_flags")
+    private Long receivedBonusesFlags = 0L;
+
     // Конструктор по умолчанию для JPA
     public ReferralStatsEmbedded() {
         // Явная инициализация всех полей
@@ -37,6 +55,11 @@ public class ReferralStatsEmbedded {
         this.monthlyExchangeCount = 0;
         this.totalEarned = BigDecimal.ZERO;
         this.referralBalance = BigDecimal.ZERO;
+        this.level1Volume = BigDecimal.ZERO;
+        this.level2Volume = BigDecimal.ZERO;
+        this.level1BonusPercent = BigDecimal.ZERO;
+        this.level2BonusPercent = BigDecimal.ZERO;
+        this.receivedBonusesFlags = 0L;
     }
 
     // Метод для безопасного получения level1Count
@@ -53,6 +76,23 @@ public class ReferralStatsEmbedded {
         return totalEarned != null ? totalEarned : BigDecimal.ZERO;
     }
 
+    // Методы для безопасного получения объемов по уровням
+    public BigDecimal getLevel1VolumeSafe() {
+        return level1Volume != null ? level1Volume : BigDecimal.ZERO;
+    }
+
+    public BigDecimal getLevel2VolumeSafe() {
+        return level2Volume != null ? level2Volume : BigDecimal.ZERO;
+    }
+
+    public Long getReceivedBonusesFlags() {
+        return receivedBonusesFlags != null ? receivedBonusesFlags : 0L;
+    }
+
+    public void setReceivedBonusesFlags(Long receivedBonusesFlags) {
+        this.receivedBonusesFlags = receivedBonusesFlags;
+    }
+
     // Метод для обеспечения инициализации всех полей (защита от null значений)
     public void ensureInitialized() {
         if (this.level1Count == null) this.level1Count = 0;
@@ -66,5 +106,10 @@ public class ReferralStatsEmbedded {
         if (this.monthlyExchangeCount == null) this.monthlyExchangeCount = 0;
         if (this.totalEarned == null) this.totalEarned = BigDecimal.ZERO;
         if (this.referralBalance == null) this.referralBalance = BigDecimal.ZERO;
+        if (this.level1Volume == null) this.level1Volume = BigDecimal.ZERO;
+        if (this.level2Volume == null) this.level2Volume = BigDecimal.ZERO;
+        if (this.level1BonusPercent == null) this.level1BonusPercent = BigDecimal.ZERO;
+        if (this.level2BonusPercent == null) this.level2BonusPercent = BigDecimal.ZERO;
+        if (this.receivedBonusesFlags == null) this.receivedBonusesFlags = 0L;
     }
 }
