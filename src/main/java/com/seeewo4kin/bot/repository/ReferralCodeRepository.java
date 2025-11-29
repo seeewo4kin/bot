@@ -14,7 +14,7 @@ public interface ReferralCodeRepository extends JpaRepository<ReferralCode, Long
     Optional<ReferralCode> findByCodeAndIsActiveTrue(String code);
     List<ReferralCode> findByOwner(com.seeewo4kin.bot.Entity.User owner);
     List<ReferralCode> findByOwnerAndIsActiveTrue(com.seeewo4kin.bot.Entity.User owner);
-    List<ReferralCode> findByOwnerId(Long ownerId);
+    List<ReferralCode> findByOwner_Id(Long ownerId);
     // Алиасы для совместимости
     default List<ReferralCode> findByUser(com.seeewo4kin.bot.Entity.User user) {
         return findByOwner(user);

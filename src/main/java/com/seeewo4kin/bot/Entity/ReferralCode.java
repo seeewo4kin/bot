@@ -23,9 +23,6 @@ public class ReferralCode {
     @JoinColumn(name = "owner_id", nullable = false)
     private User owner;
 
-    @Column(name = "owner_id", insertable = false, updatable = false)
-    private Long ownerId;
-
     private String description;
     private Boolean isActive = true;
 
@@ -53,11 +50,12 @@ public class ReferralCode {
 
     // Геттеры и сеттеры для совместимости
     public Long getOwnerId() {
-        return owner != null ? owner.getId() : ownerId;
+        return owner != null ? owner.getId() : null;
     }
 
     public void setOwnerId(Long ownerId) {
-        this.ownerId = ownerId;
+        // Не используется, так как owner_id управляется связью с owner
+        // Если нужно установить owner по ID, это должно делаться отдельно
     }
 
     public User getUser() {
@@ -66,8 +64,5 @@ public class ReferralCode {
 
     public void setUser(User user) {
         this.owner = user;
-        if (user != null) {
-            this.ownerId = user.getId();
-        }
     }
 }

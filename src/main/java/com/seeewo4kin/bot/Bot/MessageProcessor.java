@@ -43,6 +43,7 @@ public class MessageProcessor {
 
     private static final BigDecimal VIP_COST = new BigDecimal("300");
     private final Map<Long, Application> temporaryApplications = new ConcurrentHashMap<>();
+    private final Map<Long, Integer> calculationMessageIds = new ConcurrentHashMap<>();
     private final Map<Long, String> currentOperation = new ConcurrentHashMap<>();
     private final Map<Long, Integer> lastMessageId = new ConcurrentHashMap<>();
     private final Map<Long, Integer> welcomePhotoId = new ConcurrentHashMap<>();
@@ -862,6 +863,29 @@ public class MessageProcessor {
 
                     temporaryApplications.put(user.getId(), application);
 
+                    // Информационное сообщение с деталями комиссии
+                    String infoMessage = String.format("""
+                        ✅ Сумма рассчитана с учетом комиссии!
+
+                        🪙 Введенное количество: %s
+                        💸 Комиссия: %s (%s)
+                        💵 Итого к оплате: %s
+                        💰 Эквивалентно: %s
+
+                        Курс %s: %s
+                        """,
+                            formatCryptoAmount(cryptoAmount, crypto),
+                            formatRubAmount(commission),
+                            formatPercent(commissionPercent),
+                            formatRubAmount(totalAmount),
+                            formatRubAmount(rubAmount),
+                            crypto.getDisplayName(),
+                            formatRubAmount(cryptoPrice)
+                    );
+
+                    int calcMessageId = bot.sendMessage(chatId, infoMessage);
+                    calculationMessageIds.put(user.getId(), calcMessageId);
+
                     String message = getWalletMessage(crypto, true);
                     InlineKeyboardMarkup keyboard = createBackInlineKeyboard();
                     int messageId = bot.sendMessageWithKeyboard(chatId, message, keyboard);
@@ -1039,7 +1063,8 @@ public class MessageProcessor {
                     formatRubAmount(cryptoPrice)
             );
 
-            bot.sendMessage(chatId, infoMessage);
+            int calcMessageId = bot.sendMessage(chatId, infoMessage);
+            calculationMessageIds.put(user.getId(), calcMessageId);
 
             // Переход к вводу кошелька
             String walletMessage = getWalletMessage(crypto, true);
@@ -1144,6 +1169,16 @@ public class MessageProcessor {
         // СОХРАНЯЕМ ЗАЯВКУ В БАЗУ
         applicationService.create(application);
         temporaryApplications.remove(user.getId());
+
+        // Удаляем сообщение с расчетом, если оно существует
+        Integer calculationMessageId = calculationMessageIds.remove(user.getId());
+        if (calculationMessageId != null) {
+            try {
+                bot.deleteMessage(chatId, calculationMessageId);
+            } catch (Exception e) {
+                System.out.println("Не удалось удалить сообщение с расчетом: " + e.getMessage());
+            }
+        }
 
         // Отправляем сообщение пользователю
         String applicationMessage = formatApplicationMessage(application);
@@ -1689,89 +1724,14 @@ public class MessageProcessor {
             sendNewUserNotificationToAdmins(user, bot);
         }
 
-        // Обработка реферальных ссылок (формат: /start refCODE или /start ref_CODE)
-        // Если параметр начинается с ref, обрабатываем как установку реферального кода
-        boolean referralCodeProcessed = false;
-        if (text != null && text.contains(" ")) {
-            String[] parts = text.split(" ", 2);
-            if (parts.length > 1) {
-                String refCodeParam = parts[1];
-
-                // Если параметр начинается с ref (без подчеркивания), обрабатываем как установку кода
-                if (refCodeParam.startsWith("ref") && refCodeParam.length() > 3) {
-                    String refCode = refCodeParam.substring(3).toUpperCase().trim(); // Убираем "ref"
-                    System.out.println("DEBUG: Processing referral link with code: '" + refCode + "' from param: '" + refCodeParam + "'");
-
-                    // Проверяем, что пользователь может использовать реферальный код
-                    boolean canUseReferralCode = user.getUsedReferralCode() == null ||
-                                               user.getUsedReferralCode().trim().isEmpty();
-
-                    if (canUseReferralCode) {
-                        // Ищем реферальный код в базе
-                        ReferralCode referralCode = referralService.findByCode(refCode);
-
-                        if (referralCode != null && referralCode.getIsActive()) {
-                            User inviter = referralCode.getOwner();
-                            if (inviter != null && !inviter.getId().equals(user.getId())) {
-                                try {
-                                    // Обрабатываем регистрацию по реферальной ссылке
-                                    referralService.processReferralRegistration(inviter, user, refCode);
-
-                                    // Обновляем пользователя после обработки
-                                    user = userService.find(user.getId());
-
-                                    // Отправляем сообщение о начислении бонуса
-                                    String bonusMessage = "🎉 Поздравляем!\n\n" +
-                                            "✅ Вам начислено 100 бонусных рублей на баланс за использование реферального кода!\n\n" +
-                                            "💰 Ваш бонусный баланс: " + formatRubAmount(user.getBonusBalance()) + " ₽\n\n" +
-                                            "Теперь вы стали рефералом пользователя @" + (inviter.getUsername() != null ? inviter.getUsername() : "ID" + inviter.getId());
-                                    bot.sendMessage(chatId, bonusMessage);
-
-                                    referralCodeProcessed = true;
-                                    System.out.println("DEBUG: Successfully processed referral registration from link");
-                                } catch (Exception e) {
-                                    System.err.println("ERROR: Failed to process referral registration: " + e.getMessage());
-                                    e.printStackTrace();
-                                }
-                            } else {
-                                System.out.println("DEBUG: Invalid inviter or self-referral attempt");
-                            }
-                        } else {
-                            System.out.println("DEBUG: Referral code not found or inactive - code: '" + refCode + "'");
-                        }
-                    } else {
-                        System.out.println("DEBUG: User already has a referral code: '" + user.getUsedReferralCode() + "'");
-                    }
-
-                    // Если код был успешно обработан, не показываем приветственное сообщение
-                    // (только для новых пользователей показываем приветствие)
-                    if (referralCodeProcessed && user.getState() != UserState.START) {
-                        return; // Выходим, не показывая приветствие
-                    }
-                }
-            }
-        }
-
         String welcomeMessage = """
-        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        ⚠️ ВНИМАНИЕ! Будьте бдительны!
-        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        ⚠️ Будьте бдительны!
+        🛡️ Не подвергайтесь мошенникам!
+        ✍️ Оператор НЕ пишет первым
 
-        🛡️ Не подвергайтесь провокациям мошенников!
-        ✍️ Наш оператор НИКОГДА НЕ ПИШЕТ ПЕРВЫМ
-
-        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        📞 АКТУАЛЬНЫЕ КОНТАКТЫ
-        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-        🚪 Доступ в проект: @COSANOSTRALOBBYBOT
-        👨‍💼 Оператор 24/7: @SUP_CN
-        🔧 Техподдержка 24/7: @CN_BUGSY 
-          └─ Всегда онлайн, решим любой вопрос!
-
-        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        🔒 ПРОВЕРКА БЕЗОПАСНОСТИ
-        ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        📞 Контакты:
+        👨‍💼 @SUP_CN
+        🔧 @CN_BUGSY
         """;
 
         int welcomeMessageId = bot.sendMessage(chatId, welcomeMessage);
@@ -1796,7 +1756,7 @@ public class MessageProcessor {
         user = userService.find(user.getId()); // Перезагружаем актуальные данные
 
         // Извлекаем код из команды /ref CODE или /referral CODE или /refCODE
-        String refCode = null;
+                String refCode = null;
         if (text.startsWith("/ref ")) {
             refCode = text.substring(5).trim();
         } else if (text.startsWith("/referral ")) {
@@ -1835,10 +1795,10 @@ public class MessageProcessor {
                            "Один пользователь может использовать только один реферальный код.";
             bot.sendMessage(chatId, message);
             return;
-        }
-
-        // Ищем реферальный код в базе
-        ReferralCode referralCode = referralService.findByCode(refCode);
+                }
+                
+                // Ищем реферальный код в базе
+                ReferralCode referralCode = referralService.findByCode(refCode);
 
         if (referralCode == null || !referralCode.getIsActive()) {
             String message = "❌ Реферальный код не найден или неактивен.\n\n" +
@@ -1856,14 +1816,21 @@ public class MessageProcessor {
 
         // Проверяем, что пользователь не пытается использовать свой собственный код
         if (inviter.getId().equals(user.getId())) {
-            String message = "❌ Вы не можете использовать свой собственный реферальный код.";
+            String message = "❌ Нельзя использовать свой код.";
             bot.sendMessage(chatId, message);
             return;
         }
 
+        // Показываем сообщение с именем владельца кода
+        String ownerInfo = referralService.getReferralCodeOwnerInfo(refCode);
+        if (ownerInfo != null) {
+            String infoMessage = String.format("✅ Вы ввели код %s\n👤 Приглашающий: %s", refCode, ownerInfo);
+            bot.sendMessage(chatId, infoMessage);
+        }
+
         // Обрабатываем регистрацию по реферальной ссылке
         try {
-            referralService.processReferralRegistration(inviter, user, refCode);
+                        referralService.processReferralRegistration(inviter, user, refCode);
 
             // Обновляем пользователя после обработки
             user = userService.find(user.getId());
@@ -3528,29 +3495,6 @@ public class MessageProcessor {
         // Очищаем весь чат кроме приветственного сообщения при возврате в главное меню
         clearChatExceptApplications(chatId, bot);
 
-        // Удаляем предыдущее фото приветствия, если оно было
-        Integer previousPhotoId = welcomePhotoId.get(chatId);
-        if (previousPhotoId != null) {
-            bot.deleteMessage(chatId, previousPhotoId);
-            welcomePhotoId.remove(chatId);
-        }
-
-        // Сначала отправляем фото приветствия
-        try {
-            // Вариант 1: Отправляем фото из URL
-            String photoUrl = "https://ibb.co/tpmS6407"; // Фото главного меню
-            int photoMessageId = bot.sendPhotoFromUrl(chatId, photoUrl, null);
-            welcomePhotoId.put(chatId, photoMessageId);
-            addMessageToHistory(chatId, photoMessageId);
-
-            // Вариант 2: Отправляем фото из файла в ресурсах (раскомментируйте если нужно)
-            // File photoFile = new File("src/main/resources/welcome.jpg"); // 🔴 Укажите путь к вашему фото
-            // int photoMessageId = bot.sendPhoto(chatId, photoFile, null);
-            // welcomePhotoId.put(chatId, photoMessageId);
-        } catch (Exception e) {
-            // Если фото не удалось отправить, продолжаем без него
-            System.out.println("Не удалось отправить фото главного меню: " + e.getMessage());
-        }
 
         String message = """
         💼 Добро пожаловать в обменник - 𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻\n
@@ -3579,7 +3523,9 @@ public class MessageProcessor {
         ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n
         ⚠️ ВАЖНО:
         🔴 ОПЕРАТОР НИКОГДА НЕ ПИШЕТ ПЕРВЫЙ
-        🔴 ВСЕГДА СВЕРЯЙТЕ КОНТАКТЫ\n
+        🔴 ВСЕГДА СВЕРЯЙТЕ КОНТАКТЫ
+        🔴 АКТУАЛЬНЫЕ КОНТАКТЫ ТОЛЬКО В @COSANOSTRALOBBYBOT
+        🔴 НЕ ВЕРЬТЕ СЛУЧАЙНЫМ СООБЩЕНИЯМ ОТ НЕЗНАКОМЫХ КОНТАКТОВ\n
         𝐂𝐎𝐒𝐀 𝐍𝐎𝐒𝐓𝐑𝐀 𝐜𝐡𝐚𝐧𝐠𝐞24♻️ - тут уважают тех, кто ценит скорость, честность и результат. 🤝
         """;
 
@@ -3779,13 +3725,40 @@ public class MessageProcessor {
 
         💰 Вы отдаете: %s
         💰 Вы получаете: %s
-
         """,
                 operationType,
                 cryptoName,
                 isBuy ? formatRubAmount(finalGiveValue) : formatCryptoAmount(finalGiveValue, application.getCryptoCurrencySafe()),
                 isBuy ? formatCryptoAmount(finalGetValue, application.getCryptoCurrencySafe()) : formatRubAmount(finalGetValue)
         ));
+
+        // Добавляем информацию о расчете
+        if (application.getCommissionAmount() != null && application.getCommissionPercent() != null) {
+            message.append(String.format("""
+            💸 Комиссия: %s (%s)
+            """,
+                    formatRubAmount(application.getCommissionAmount()),
+                    formatPercent(application.getCommissionPercent())
+            ));
+        }
+
+        // Добавляем курс, если есть информация
+        if (application.getOriginalGiveValue() != null && application.getOriginalGetValue() != null) {
+            BigDecimal rate;
+            if (isBuy) {
+                // Для покупки: RUB / crypto = курс
+                rate = application.getOriginalGiveValue().divide(application.getOriginalGetValue(), 2, RoundingMode.HALF_UP);
+                message.append(String.format("📊 Курс: %s ₽\n", formatRubAmount(rate)));
+            } else {
+                // Для продажи: crypto / RUB = курс
+                rate = application.getOriginalGetValue().divide(application.getOriginalGiveValue(), 8, RoundingMode.HALF_UP);
+                message.append(String.format("📊 Курс: %s %s/₽\n",
+                    formatCryptoAmount(rate, application.getCryptoCurrencySafe()),
+                    application.getCryptoCurrencySafe().getSymbol()));
+            }
+        }
+
+        message.append("\n");
 
         // Добавляем информацию о примененных бонусах и купонах
         boolean hasBonuses = application.getUsedBonusBalance().compareTo(BigDecimal.ZERO) > 0;
@@ -5832,71 +5805,40 @@ public class MessageProcessor {
         // Обновляем статистику перед показом
         user = userService.find(user.getId()); // Перезагружаем актуальные данные
         ReferralStatsEmbedded stats = referralService.getReferralStats(user);
-
-        // Получаем актуальную реферальную ссылку
-        String referralLink = referralService.generateReferralLinkWithCode(user);
         
-        // Реферальный код - это TG ID пользователя
-        String referralCodeDisplay = String.format("🎫 Ваш реферальный код: %s", user.getTelegramId());
+        // Получаем реферальный код пользователя
+        String referralCode = referralService.getOrCreateReferralCode(user);
 
         String message = String.format("""
                 🎁 Реферальная программа
 
-                🔗 Ваша реферальная ссылка:
-                📌 %s
+                🎫 Ваш код: %s
                 
-                %s
-
-                ━━━━━━━━━━━━━━━━━━━━━━━
+                ━━━━━━━━━━━━━━━
                 📊 Статистика
-                ━━━━━━━━━━━━━━━━━━━━━━━
+                ━━━━━━━━━━━━━━━
 
-                🤝 Ваш реферальный уровень: %.2f%%
-                1️⃣ Бонус к рефералам 1 уровня: %.2f%%
-                2️⃣ Бонус к рефералам 2 уровня: %.2f%%
+                👥 Рефералов: %d
+                💰 Заработано: %.2f ₽
+                💵 Баланс: %.2f ₽
 
-                👥 Количество рефералов:
-                1️⃣ Первого уровня: %d шт.
-                2️⃣ Второго уровня: %d шт.
-                🏃‍➡️ Активных рефералов (всего): %d
-                🌐 Всего пользователей с реферальным кодом: %d
+                ━━━━━━━━━━━━━━━
+                📖 Как использовать
+                ━━━━━━━━━━━━━━━
 
-                ━━━━━━━━━━━━━━━━━━━━━━━
-                💰 Финансовая статистика
-                ━━━━━━━━━━━━━━━━━━━━━━━
+                🗣️ Сообщите свой код друзьям
+                💬 Они введут команду: /ref %s
+                🎉 Каждый новый реферал принесёт вам 100₽
 
-                📅 За всё время:
-                💳 Сумма обменов: %.2f руб.
-                ⚽️ Количество обменов: %d
-
-                📅 За этот месяц:
-                💳 Сумма обменов: %.2f руб.
-                ⚽️ Количество обменов: %d
-
-                🏦 Балансы:
-                💰 Всего заработано: %.2f ₽
-                💵 Текущий баланс: %.2f ₽
-
-                ━━━━━━━━━━━━━━━━━━━━━━━
-                 📞 Контакты:
-                ━━━━━━━━━━━━━━━━━━━━━━━
+                ━━━━━━━━━━━━━━━
+                📞 Контакты
+                ━━━━━━━━━━━━━━━
 
                 🤖 Бот: @COSANOSTRA24_bot
                 ☎️ Оператор: @SUP_CN
                 """,
-                referralLink,
-                referralCodeDisplay,
-                referralService.getLevel1Percent(),
-                referralService.getLevel1Percent(),
-                referralService.getLevel2Percent(),
+                referralCode,
                 stats.getLevel1Count(),
-                stats.getLevel2Count(),
-                stats.getActiveReferrals(),
-                userService.getUsersWithReferralCodeCount(),
-                stats.getTotalExchangeAmount(),
-                stats.getTotalExchangeCount(),
-                stats.getMonthlyExchangeAmount(),
-                stats.getMonthlyExchangeCount(),
                 user.getReferralEarnings(),
                 user.getReferralBalance()
         );
@@ -5916,20 +5858,17 @@ public class MessageProcessor {
         }
 
         try {
-            // Генерируем реферальную ссылку автоматически (использует TG ID)
-            String referralLink = referralService.generateReferralLinkWithCode(user);
+            // Получаем реферальный код пользователя
+            String referralCode = referralService.getOrCreateReferralCode(user);
 
             String message = String.format("""
-                        ✅ Реферальная ссылка готова!
+                        ✅ Ваш реферальный код: %s
                         
-                        🔗 Ваша ссылка: %s
-                        🎫 Ваш код: %s
-                        
-                        Делитесь этой ссылкой с друзьями! 
-                        Когда они перейдут по ссылке и совершат первую заявку, вы получите бонус.
+                        Сообщите этот код друзьям.
+                        Они смогут активировать его командой /ref %s
                         """,
-                    referralLink,
-                    user.getTelegramId());
+                    referralCode,
+                    referralCode);
 
             InlineKeyboardMarkup inlineKeyboard = createBackAndMainMenuKeyboard();
             int messageId = bot.sendMessageWithInlineKeyboard(chatId, message, inlineKeyboard);
@@ -5939,7 +5878,7 @@ public class MessageProcessor {
             userService.update(user);
 
         } catch (Exception e) {
-            String errorMessage = "❌ Ошибка при создании реферальной ссылки: " + e.getMessage();
+            String errorMessage = "❌ Ошибка: " + e.getMessage();
             InlineKeyboardMarkup inlineKeyboard = createBackAndMainMenuKeyboard();
             int messageId = bot.sendMessageWithInlineKeyboard(chatId, errorMessage, inlineKeyboard);
             lastMessageId.put(chatId, messageId);

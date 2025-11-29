@@ -315,21 +315,12 @@ public class ReferralService {
         return sb.toString();
     }
 
-    // Форматирование реферальной ссылки
-    private String formatReferralLink(String code) {
-        // Используем username бота из конфигурации
-        // В Telegram username бота обычно заканчивается на _bot, но может быть и без него
-        // Проверяем, есть ли уже _bot в конце, если нет - добавляем
-        String username = botUsername;
-        if (!username.endsWith("_bot") && !username.contains("_")) {
-            username = username + "_bot";
-        }
-        // Используем формат refCODE (без подчеркивания)
-        return "https://t.me/" + username + "?start=ref" + code;
-    }
-    public String generateReferralLinkWithCode(User user) {
+    /**
+     * Получает или создает реферальный код для пользователя (использует TG ID)
+     */
+    public String getOrCreateReferralCode(User user) {
         try {
-            System.out.println("DEBUG: Generating referral link for user " + user.getId() + " (TG ID: " + user.getTelegramId() + ")");
+            System.out.println("DEBUG: Getting referral code for user " + user.getId() + " (TG ID: " + user.getTelegramId() + ")");
 
             // Используем Telegram ID как реферальный код
             String referralCode = generateReferralCode(user.getTelegramId());
@@ -338,19 +329,16 @@ public class ReferralService {
             // Проверяем, есть ли уже запись об этом коде
             ReferralCode existingCode = findByCode(referralCode);
             if (existingCode != null) {
-                System.out.println("DEBUG: Referral code already exists, using existing");
-                String link = formatReferralLink(referralCode);
-                System.out.println("DEBUG: Generated link: " + link);
-                return link;
+                System.out.println("DEBUG: Referral code already exists");
+                return referralCode;
             }
 
             // Создаем новый реферальный код (используем TG ID)
             System.out.println("DEBUG: Creating new referral code for user " + user.getId());
             ReferralCode referralCodeEntity = new ReferralCode();
             referralCodeEntity.setCode(referralCode);
-            referralCodeEntity.setOwner(user);
-            referralCodeEntity.setOwnerId(user.getId());
-            referralCodeEntity.setDescription("Реферальная ссылка пользователя " +
+            referralCodeEntity.setOwner(user); // Это автоматически установит owner_id в базе
+            referralCodeEntity.setDescription("Реферальный код пользователя " +
                     (user.getUsername() != null ? "@" + user.getUsername() : "ID " + user.getTelegramId()));
             referralCodeEntity.setIsActive(true);
             referralCodeEntity.setRewardPercent(BigDecimal.valueOf(3.0));
@@ -362,24 +350,41 @@ public class ReferralService {
             ReferralCode savedCode = createReferralCode(referralCodeEntity);
             System.out.println("DEBUG: Saved new code to database: " + savedCode.getCode());
 
-            // Возвращаем сформированную ссылку
-            String link = formatReferralLink(savedCode.getCode());
-            System.out.println("DEBUG: Generated new link: " + link);
-            return link;
+            return savedCode.getCode();
 
         } catch (Exception e) {
-            System.err.println("Error generating referral link for user " + user.getId() + ": " + e.getMessage());
+            System.err.println("Error creating referral code for user " + user.getId() + ": " + e.getMessage());
             e.printStackTrace();
-            throw new RuntimeException("Не удалось создать реферальную ссылку", e);
+            throw new RuntimeException("Не удалось создать реферальный код", e);
+        }
+    }
+
+    /**
+     * Получает информацию о владельце реферального кода
+     */
+    public String getReferralCodeOwnerInfo(String referralCode) {
+        try {
+            ReferralCode code = findByCode(referralCode);
+            if (code == null || code.getOwner() == null) {
+                return null;
+            }
+
+            User owner = code.getOwner();
+            String ownerName = owner.getUsername() != null ? "@" + owner.getUsername() : "ID " + owner.getTelegramId();
+            return ownerName;
+        } catch (Exception e) {
+            System.err.println("Error getting referral code owner info: " + e.getMessage());
+            return null;
         }
     }
 
     // Метод createReferralCode должен принимать только ReferralCode
     public ReferralCode createReferralCode(ReferralCode referralCode) {
-        // Если нужно установить ownerId, делаем это здесь
-        if (referralCode.getOwnerId() == null && referralCode.getOwner() != null) {
-            referralCode.setOwnerId(referralCode.getOwner().getId());
+        // Убеждаемся, что владелец сохранен в базе
+        if (referralCode.getOwner() != null && referralCode.getOwner().getId() == null) {
+            referralCode.setOwner(userRepository.save(referralCode.getOwner()));
         }
+
         return referralCodeRepository.save(referralCode);
     }
 
