@@ -37,6 +37,7 @@ public class MessageProcessor {
     private final ReferralService referralService;
     private final CommissionConfig commissionConfig;
     private final com.seeewo4kin.bot.repository.UserRepository userRepository;
+    private final MessageCleanupService messageCleanupService;
     private final Map<Long, Integer> adminAllApplicationsPage = new ConcurrentHashMap<>();
     private final Map<Long, Integer> adminActiveApplicationsPage = new ConcurrentHashMap<>();
     private final Map<Long, Integer> adminAllUsersPage = new ConcurrentHashMap<>();
@@ -62,7 +63,8 @@ public class MessageProcessor {
                             CommissionService commissionService,
                             ReferralService referralService,
                             CommissionConfig commissionConfig,
-                            com.seeewo4kin.bot.repository.UserRepository userRepository) {
+                            com.seeewo4kin.bot.repository.UserRepository userRepository,
+                            MessageCleanupService messageCleanupService) {
         this.userService = userService;
         this.applicationService = applicationService;
         this.cryptoPriceService = cryptoPriceService;
@@ -73,6 +75,7 @@ public class MessageProcessor {
         this.referralService = referralService;
         this.commissionConfig = commissionConfig;
         this.userRepository = userRepository;
+        this.messageCleanupService = messageCleanupService;
     }
 
     private String formatRubAmount(BigDecimal amount) {
@@ -1237,7 +1240,15 @@ public class MessageProcessor {
             );
 
             for (Long adminId : adminConfig.getAdminUserIds()) {
-                bot.sendMessage(adminId, adminNotification);
+                try {
+                    int adminMessageId = bot.sendMessage(adminId, adminNotification);
+                    if (adminMessageId != -1) {
+                        // Планируем автоматическое удаление сообщения через 5 минут
+                        messageCleanupService.scheduleAdminNotificationDeletion(adminId, adminMessageId);
+                    }
+                } catch (Exception e) {
+                    System.err.println("Не удалось отправить уведомление о заявке админу " + adminId + ": " + e.getMessage());
+                }
             }
         } catch (Exception e) {
             System.err.println("Не удалось отправить уведомление админам: " + e.getMessage());
@@ -1263,44 +1274,61 @@ public class MessageProcessor {
                 "💳 Реквизиты для выплаты";
 
         StringBuilder message = new StringBuilder();
-        // Определяем изначальную сумму пользователя
-        String originalAmountText = "";
+        // Определяем суммы для отображения
+        String amountWithoutCommissionText = "";
+        String amountWithCommissionText = "";
+        String amountWithBonusesText = "";
+
+        // Сумма без комиссии - то, что ввел пользователь
         if (isBuy) {
-            // Для покупки: пользователь ввел сумму в рублях (userValueGiveValue) или крипте (userValueGetValue)
             if (application.getUserValueGiveType() == ValueType.RUB) {
-                // Ввод в рублях - показываем как есть
-                originalAmountText = String.format("• Изначальная сумма: %s ₽", formatRubAmount(application.getUserValueGiveValue()));
+                // Покупка за рубли - без комиссии это originalGiveValue
+                amountWithoutCommissionText = String.format("• Сумма без комиссии: %s ₽", formatRubAmount(application.getOriginalGiveValue()));
             } else {
-                // Ввод в крипте - переводим в рубли
+                // Покупка криптой - без комиссии это originalGetValue в рублях
                 BigDecimal cryptoToRubRate = cryptoPriceService.getCurrentPrice(application.getCryptoCurrency().name(), "RUB");
                 if (cryptoToRubRate != null && cryptoToRubRate.compareTo(BigDecimal.ZERO) > 0) {
-                    BigDecimal originalInRub = application.getUserValueGetValue().multiply(cryptoToRubRate);
-                    originalAmountText = String.format("• Хочу купить на сумму: %s ₽ (%s)",
+                    BigDecimal originalInRub = application.getOriginalGetValue().multiply(cryptoToRubRate);
+                    amountWithoutCommissionText = String.format("• Сумма без комиссии: %s ₽ (%s)",
                             formatRubAmount(originalInRub),
-                            formatCryptoAmount(application.getUserValueGetValue(), application.getCryptoCurrencySafe()));
+                            formatCryptoAmount(application.getOriginalGetValue(), application.getCryptoCurrencySafe()));
                 } else {
-                    originalAmountText = String.format("• Изначальная сумма: %s",
-                            formatCryptoAmount(application.getUserValueGetValue(), application.getCryptoCurrencySafe()));
+                    amountWithoutCommissionText = String.format("• Сумма без комиссии: %s",
+                            formatCryptoAmount(application.getOriginalGetValue(), application.getCryptoCurrencySafe()));
                 }
             }
         } else {
-            // Для продажи: пользователь ввел сумму в крипте (userValueGiveValue) или рублях (userValueGetValue)
             if (application.getUserValueGiveType() == ValueType.RUB) {
-                // Ввод в рублях - показываем как есть
-                originalAmountText = String.format("• Изначальная сумма: %s ₽", formatRubAmount(application.getUserValueGiveValue()));
+                // Продажа рублей - без комиссии это originalGiveValue
+                amountWithoutCommissionText = String.format("• Сумма без комиссии: %s ₽", formatRubAmount(application.getOriginalGiveValue()));
             } else {
-                // Ввод в крипте - переводим в рубли
+                // Продажа крипты - без комиссии это originalGiveValue в рублях
                 BigDecimal cryptoToRubRate = cryptoPriceService.getCurrentPrice(application.getCryptoCurrency().name(), "RUB");
                 if (cryptoToRubRate != null && cryptoToRubRate.compareTo(BigDecimal.ZERO) > 0) {
-                    BigDecimal originalInRub = application.getUserValueGiveValue().multiply(cryptoToRubRate);
-                    originalAmountText = String.format("• Хочу продать на сумму: %s ₽ (%s)",
+                    BigDecimal originalInRub = application.getOriginalGiveValue().multiply(cryptoToRubRate);
+                    amountWithoutCommissionText = String.format("• Сумма без комиссии: %s ₽ (%s)",
                             formatRubAmount(originalInRub),
-                            formatCryptoAmount(application.getUserValueGiveValue(), application.getCryptoCurrencySafe()));
+                            formatCryptoAmount(application.getOriginalGiveValue(), application.getCryptoCurrencySafe()));
                 } else {
-                    originalAmountText = String.format("• Изначальная сумма: %s",
-                            formatCryptoAmount(application.getUserValueGiveValue(), application.getCryptoCurrencySafe()));
+                    amountWithoutCommissionText = String.format("• Сумма без комиссии: %s",
+                            formatCryptoAmount(application.getOriginalGiveValue(), application.getCryptoCurrencySafe()));
                 }
             }
+        }
+
+        // Сумма с комиссией - рассчитанная сумма
+        if (isBuy) {
+            amountWithCommissionText = String.format("• Сумма с комиссией: %s ₽", formatRubAmount(application.getCalculatedGiveValue()));
+        } else {
+            amountWithCommissionText = String.format("• Сумма с комиссией: %s", formatCryptoAmount(application.getCalculatedGiveValue(), application.getCryptoCurrencySafe()));
+        }
+
+        // Сумма с учетом бонусов - сумма с комиссией минус использованные бонусы
+        BigDecimal amountWithBonuses = application.getCalculatedGiveValue().subtract(application.getUsedBonusBalance());
+        if (isBuy) {
+            amountWithBonusesText = String.format("• Сумма с учетом бонусов: %s ₽", formatRubAmount(amountWithBonuses));
+        } else {
+            amountWithBonusesText = String.format("• Сумма с учетом бонусов: %s", formatCryptoAmount(amountWithBonuses, application.getCryptoCurrencySafe()));
         }
 
         message.append(String.format("""
@@ -1313,21 +1341,21 @@ public class MessageProcessor {
         ━━━━━━━━━━━━━━━━━━━━━━━
 
         %s
+        %s
+        %s
         • Получаете: %s
-        • Отдаете: %s (с комиссией)
         • %s: %s
         • Приоритет: %s
         """,
                 operationType,
                 cryptoName,
                 application.getId(), // Используем ID вместо UUID
-                originalAmountText,
+                amountWithoutCommissionText,
+                amountWithCommissionText,
+                amountWithBonusesText,
                 isBuy ?
                         formatCryptoAmount(application.getCalculatedGetValue(), application.getCryptoCurrencySafe()) :
                         formatRubAmount(application.getCalculatedGetValue()),
-                isBuy ?
-                        formatRubAmount(application.getCalculatedGiveValue()) :
-                        formatCryptoAmount(application.getCalculatedGiveValue(), application.getCryptoCurrencySafe()),
                 walletLabel,
                 application.getWalletAddress(),
                 application.getIsVip() ? "👑 VIP" : "🔹 Обычный"
@@ -1770,15 +1798,51 @@ public class MessageProcessor {
         // Логируем полученную команду для отладки
         System.out.println("DEBUG: Received /start command with text: '" + text + "'");
 
+        // ПРОВЕРЯЕМ START PARAMETER ИЗ DEEP LINK - параметр передается в тексте после /start
+        String startParameter = null;
+        if (text != null && text.length() > 7) { // "/start " + параметр
+            startParameter = text.substring(7).trim(); // Убираем "/start "
+        }
+        System.out.println("DEBUG: Start parameter: '" + startParameter + "'");
+
         // Очищаем весь чат при команде /start
         clearChatExceptApplications(chatId, bot);
 
         User user = userService.findOrCreateUser(telegramUser);
-        
+
         // Перезагружаем пользователя из базы, чтобы получить актуальные данные
         user = userService.find(user.getId());
-        
+
         System.out.println("DEBUG: User loaded - ID: " + user.getId() + ", usedReferralCode: '" + user.getUsedReferralCode() + "', bonusBalance: " + user.getBonusBalance());
+
+        // ОБРАБОТКА РЕФЕРАЛЬНОГО ПАРАМЕТРА ИЗ DEEP LINK
+        if (startParameter != null && !startParameter.trim().isEmpty() && startParameter.startsWith("ref")) {
+            String referralCode = startParameter.substring(3).trim(); // Убираем "ref"
+
+            System.out.println("DEBUG: Processing referral code from deep link: " + referralCode);
+
+            // Проверяем, что пользователь еще не использовал реферальный код
+            if (!user.hasUsedReferralCode() && referralService.isValidReferralCode(referralCode)) {
+                boolean success = referralService.useReferralCode(referralCode, user);
+                if (success) {
+                    user = userService.find(user.getId()); // Перезагружаем данные
+                    System.out.println("DEBUG: Referral code activated via deep link: " + referralCode);
+
+                    // Показываем сообщение об успешной активации
+                    String referralSuccessMessage = "🎉 Добро пожаловать!\n\n" +
+                        "✅ Реферальный код успешно активирован!\n" +
+                        "Теперь вы будете получать бонусы за приглашенных друзей.";
+
+                    bot.sendMessage(chatId, referralSuccessMessage);
+                } else {
+                    System.out.println("DEBUG: Failed to activate referral code: " + referralCode);
+                }
+            } else {
+                System.out.println("DEBUG: Invalid referral code or already used: " + referralCode +
+                    ", hasUsed: " + user.hasUsedReferralCode() +
+                    ", isValid: " + referralService.isValidReferralCode(referralCode));
+            }
+        }
 
         // Отправляем уведомление админам о новом пользователе
         if (userService.wasUserCreated(user, telegramUser)) {
@@ -2921,7 +2985,11 @@ public class MessageProcessor {
                     // Отправляем уведомление всем админам
                     for (Long adminId : adminConfig.getAdminUserIds()) {
                         try {
-                            bot.sendMessage(adminId, spamMessage);
+                            int messageId = bot.sendMessage(adminId, spamMessage);
+                            if (messageId != -1) {
+                                // Планируем автоматическое удаление сообщения через 5 минут
+                                messageCleanupService.scheduleAdminNotificationDeletion(adminId, messageId);
+                            }
                         } catch (Exception e) {
                             System.err.println("Не удалось отправить уведомление о спам-блоке админу " + adminId + ": " + e.getMessage());
                         }
@@ -6301,9 +6369,10 @@ public class MessageProcessor {
         // Обновляем статистику перед показом
         user = userService.find(user.getId()); // Перезагружаем актуальные данные
         ReferralStatsEmbedded stats = referralService.getReferralStats(user);
-        
-        // Получаем реферальный код пользователя
+
+        // Получаем реферальный код и ссылку пользователя
         String referralCode = referralService.getOrCreateReferralCode(user);
+        String referralLink = referralService.generateReferralLink(user);
 
         String message = String.format("""
                 🎁 Реферальная программа
@@ -6322,8 +6391,11 @@ public class MessageProcessor {
                 📖 Как использовать
                 ━━━━━━━━━━━━━━━
 
-                🗣️ Сообщите свой код друзьям
-                💬 Они введут команду: /ref %s
+                🔗 Ваша реферальная ссылка:
+                %s
+
+                👥 Отправьте эту ссылку друзьям!
+                🤖 Они смогут присоединиться автоматически
 
                 ━━━━━━━━━━━━━━━
                 📞 Контакты
@@ -6336,7 +6408,7 @@ public class MessageProcessor {
                 stats.getLevel1Count(),
                 user.getReferralEarnings(),
                 user.getReferralBalance(),
-                referralCode
+                referralLink
         );
 
         InlineKeyboardMarkup inlineKeyboard = createReferralMenuInlineKeyboard();
@@ -7989,6 +8061,9 @@ public class MessageProcessor {
                     // Если messageId == -1, значит произошла ошибка
                     if (messageId == -1) {
                         System.err.println("Не удалось отправить уведомление админу " + adminId + ": ошибка отправки сообщения");
+                    } else {
+                        // Планируем автоматическое удаление сообщения через 5 минут
+                        messageCleanupService.scheduleAdminNotificationDeletion(adminId, messageId);
                     }
                 } catch (Exception e) {
                     // Игнорируем ошибки отправки уведомлений, чтобы не прерывать работу бота

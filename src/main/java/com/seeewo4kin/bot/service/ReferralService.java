@@ -903,4 +903,12 @@ public class ReferralService {
                 (referralCode.getExpiresAt() == null ||
                         referralCode.getExpiresAt().isAfter(LocalDateTime.now()));
     }
+
+    /**
+     * Генерирует реферальную ссылку для пользователя
+     */
+    public String generateReferralLink(User user) {
+        String referralCode = getOrCreateReferralCode(user);
+        return String.format("https://t.me/%s?start=ref%s", botUsername, referralCode);
+    }
 }
