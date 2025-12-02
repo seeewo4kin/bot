@@ -861,6 +861,10 @@ public class ReferralService {
         // Обрабатываем регистрацию
         processReferralRegistration(inviter, newUser, referralCode.getCode());
 
+        // Начисляем 100 рублей бонуса новому пользователю
+        newUser.setBonusBalance(newUser.getBonusBalance().add(BigDecimal.valueOf(100)));
+        userRepository.save(newUser);
+
         // Увеличиваем счетчик использования кода
         referralCode.setUsedCount(referralCode.getUsedCount() + 1);
         referralCodeRepository.save(referralCode);

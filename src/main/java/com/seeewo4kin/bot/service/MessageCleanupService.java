@@ -2,6 +2,7 @@ package com.seeewo4kin.bot.service;
 
 import com.seeewo4kin.bot.Bot.MyBot;
 import jakarta.annotation.PreDestroy;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.util.concurrent.Executors;
@@ -14,7 +15,7 @@ public class MessageCleanupService {
     private final ScheduledExecutorService scheduler;
     private final MyBot bot;
 
-    public MessageCleanupService(MyBot bot) {
+    public MessageCleanupService(@Lazy MyBot bot) {
         this.bot = bot;
         this.scheduler = Executors.newScheduledThreadPool(2);
     }
